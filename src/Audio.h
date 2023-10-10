@@ -8,7 +8,7 @@
  *      Author: Wolle (schreibfaul1)
  */
 
-//#define SDFATFS_USED  // activate for SdFat
+
 
 
 #pragma once
@@ -26,48 +26,16 @@
 
 #ifndef AUDIO_NO_SD_FS
 #include <SPI.h>
-#ifdef SDFATFS_USED
-#include <SdFat.h>  // https://github.com/greiman/SdFat
-#else
+
 #include <SD.h>
 #include <SD_MMC.h>
 #include <SPIFFS.h>
 #include <FS.h>
 #include <FFat.h>
-#endif // SDFATFS_USED
 
 
-#ifdef SDFATFS_USED
-//typedef File32 File;
-typedef FsFile File;
 
-namespace fs {
-    class FS : public SdFat {
-    public:
-        bool begin(SdCsPin_t csPin = SS, uint32_t maxSck = SD_SCK_MHZ(25)) { return SdFat::begin(csPin, maxSck); }
-    };
 
-    class SDFATFS : public fs::FS {
-    public:
-        // sdcard_type_t cardType();
-        uint64_t cardSize() {
-            return totalBytes();
-        }
-        uint64_t usedBytes() {
-            // set SdFatConfig MAINTAIN_FREE_CLUSTER_COUNT non-zero. Then only the first call will take time.
-            return (uint64_t)(clusterCount() - freeClusterCount()) * (uint64_t)bytesPerCluster();
-        }
-        uint64_t totalBytes() {
-            return (uint64_t)clusterCount() * (uint64_t)bytesPerCluster();
-        }
-    };
-}
-
-extern fs::SDFATFS SD_SDFAT;
-
-using namespace fs;
-#define SD SD_SDFAT
-#endif //SDFATFS_USED
 #endif // AUDIO_NO_SD_FS
 using namespace std;
 
@@ -91,7 +59,6 @@ extern __attribute__((weak)) void audio_eof_speech(const char*);
 extern __attribute__((weak)) void audio_eof_stream(const char*); // The webstream comes to an end
 extern __attribute__((weak)) void audio_process_extern(int16_t* buff, uint16_t len, bool *continueI2S); // record audiodata or send via BT
 extern __attribute__((weak)) void audio_process_i2s(uint32_t* sample, bool *continueI2S); // record audiodata or send via BT
-extern __attribute__((weak)) void audio_buffering_stream(const char*); //
 
 
 
@@ -174,7 +141,6 @@ public:
     void setBufsize(int rambuf_sz, int psrambuf_sz);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
     bool connecttospeech(const char* speech, const char* lang);
-    bool connecttomarytts(const char* speech, const char* lang, const char* voice);
 #ifndef AUDIO_NO_SD_FS
 
     bool connecttoFS(fs::FS &fs, const char* path, int32_t resumeFilePos = -1);
@@ -195,7 +161,7 @@ public:
     void forceMono(bool m);
     void setBalance(int8_t bal = 0);
     void setVolumeSteps(uint8_t steps);
-    void setVolume(uint8_t vol);
+    void setVolume(uint8_t vol, uint8_t curve = 0);
     uint8_t getVolume();
     uint8_t maxVolume();
     uint8_t getI2sPort();
@@ -268,6 +234,7 @@ private:
     bool playChunk();
     bool playSample(int16_t sample[2]);
     void computeVUlevel(int16_t sample[2]);
+    void computeLimit();
     int32_t Gain(int16_t s[2]);
     void showstreamtitle(const char* ml);
     bool parseContentType(char* ct);
@@ -277,8 +244,8 @@ private:
     esp_err_t I2Sstop(uint8_t i2s_num);
     void urlencode(char* buff, uint16_t buffLen, bool spacesOnly = false);
     int16_t* IIR_filterChain0(int16_t iir_in[2], bool clear = false);
-    int16_t* IIR_filterChain1(int16_t* iir_in, bool clear = false);
-    int16_t* IIR_filterChain2(int16_t* iir_in, bool clear = false);
+    int16_t* IIR_filterChain1(int16_t iir_in[2], bool clear = false);
+    int16_t* IIR_filterChain2(int16_t iir_in[2], bool clear = false);
     inline void setDatamode(uint8_t dm){m_datamode=dm;}
     inline uint8_t getDatamode(){return m_datamode;}
     inline uint32_t streamavail(){ return _client ? _client->available() : 0;}
@@ -388,7 +355,7 @@ private:
     }
 
     int specialIndexOf (uint8_t* base, const char* str, int baselen, bool exact = false){
-        int result;  // seek for str in buffer or in header up to baselen, not nullterninated
+        int result = 0;  // seek for str in buffer or in header up to baselen, not nullterninated
         if (strlen(str) > baselen) return -1; // if exact == true seekstr in buffer must have "\0" at the end
         for (int i = 0; i < baselen - strlen(str); i++){
             result = i;
@@ -421,7 +388,7 @@ private:
             base64_encodestate _state;
             base64_init_encodestate(&_state);
             int len = base64_encode_block(&source[0], sourceLength, &buffer[0], &_state);
-            len = base64_encode_blockend((buffer + len), &_state);
+            base64_encode_blockend((buffer + len), &_state);
             memcpy(dest, buffer, strlen(buffer));
             dest[strlen(buffer)] = '\0';
             free(buffer);
@@ -513,7 +480,7 @@ private:
     static const uint8_t m_tsHeaderSize  = 4;
 
     char*           m_ibuff = nullptr;              // used in audio_info()
-    int             xBuffer = 10;                    //
+
 
     char*           m_chbuf = NULL;
     uint16_t        m_chbufSize = 0;                // will set in constructor (depending on PSRAM)
@@ -529,9 +496,11 @@ private:
     uint32_t        m_metacount = 0;                // counts down bytes between metadata
     int             m_controlCounter = 0;           // Status within readID3data() and readWaveHeader()
     int8_t          m_balance = 0;                  // -16 (mute left) ... +16 (mute right)
-    uint16_t        m_vol=64;                       // volume
+    uint16_t        m_vol = 21;                     // volume
     uint8_t         m_vol_steps = 21;               // default
-    int32_t         m_vol_step_div = 21 * 21;       //
+    double          m_limit_left = 0;               // limiter 0 ... 1, left channel
+    double          m_limit_right = 0;              // limiter 0 ... 1, right channel
+    uint8_t         m_curve = 0;                    // volume characteristic
     uint8_t         m_bitsPerSample = 16;           // bitsPerSample
     uint8_t         m_channels = 2;
     uint8_t         m_i2s_num = I2S_NUM_0;          // I2S_NUM_0 or I2S_NUM_1

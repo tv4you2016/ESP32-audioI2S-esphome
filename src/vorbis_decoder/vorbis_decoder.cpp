@@ -15,7 +15,7 @@
  * adapted for the ESP32 by schreibfaul1
  *
  *  Created on: 13.02.2023
- *  Updated on: 18.06.2023
+ *  Updated on: 05.09.2023
  */
 //----------------------------------------------------------------------------------------------------------------------
 //                                     O G G    I M P L.
@@ -79,8 +79,8 @@ vorbis_info_mode_t    *s_mode_param = NULL;
 vorbis_dsp_state_t    *s_dsp_state = NULL;
 
 bool VORBISDecoder_AllocateBuffers(){
-    s_vorbisSegmentTable = (uint16_t*)malloc(256 * sizeof(uint16_t));
-    s_vorbisChbuf = (char*)malloc(256);
+    s_vorbisSegmentTable = (uint16_t*)__calloc_heap_psram(256, sizeof(uint16_t));
+    s_vorbisChbuf = (char*)__calloc_heap_psram(256, sizeof(char));
     s_lastSegmentTable = (uint8_t*)__malloc_heap_psram(1024);
     VORBISsetDefaults();
     return true;
@@ -191,7 +191,10 @@ int VORBISDecode(uint8_t *inbuf, int *bytesLeft, short *outbuf){
                 else{
                     log_e("no \"vorbis\" something went wrong %i", len);
                 }
-                s_pageNr = 3;
+                // log_w("s_vorbisSegmentTableSize %d", s_vorbisSegmentTableSize);
+                // Normally the segment table has two entries, the first for comments and the second for the codebooks
+                if(!s_vorbisSegmentTableSize) {;}//there is no further segment for codebooks -> skip it
+                else s_pageNr = 3;
             }
             else if(s_pageNr == 3){ // setup header
                 int idx = VORBIS_specialIndexOf(inbuf, "vorbis", 10);
@@ -244,12 +247,21 @@ int VORBISDecode(uint8_t *inbuf, int *bytesLeft, short *outbuf){
                         s_f_oggContinuedPage = false;
                     }
                     else{ // last segment without continued Page
-                        bitReader_setData(s_lastSegmentTable, s_lastSegmentTableLen);
-                        ret = vorbis_dsp_synthesis(s_lastSegmentTable, s_lastSegmentTableLen, outbuf);
-                        uint16_t outBuffSize = 2048 * 2;
-                        s_vorbisValidSamples = vorbis_dsp_pcmout(outbuf, outBuffSize);
-                        s_lastSegmentTableLen = 0;
-                        if(ret == OV_ENOTAUDIO || ret == 0 ) ret = VORBIS_CONTINUE; // if no error send continue
+                        if(s_lastSegmentTableLen){
+                            bitReader_setData(s_lastSegmentTable, s_lastSegmentTableLen);
+                            ret = vorbis_dsp_synthesis(s_lastSegmentTable, s_lastSegmentTableLen, outbuf);
+                            uint16_t outBuffSize = 2048 * 2;
+                            s_vorbisValidSamples = vorbis_dsp_pcmout(outbuf, outBuffSize);
+                            s_lastSegmentTableLen = 0;
+                            if(ret == OV_ENOTAUDIO || ret == 0 ) ret = VORBIS_CONTINUE; // if no error send continue
+                        }
+                        else{
+                            bitReader_setData(inbuf, len);
+                            ret = vorbis_dsp_synthesis(inbuf, len, outbuf);
+                            uint16_t outBuffSize = 2048 * 2;
+                            s_vorbisValidSamples = vorbis_dsp_pcmout(outbuf, outBuffSize);
+                            ret = 0;
+                        }
                     }
                 }
                 else {  // not s_f_parseOggDone
@@ -461,7 +473,6 @@ int parseVorbisCodebook(){
     int ret = 0;
 
     s_nrOfCodebooks = bitReader(8) +1;
-
     s_codebooks = (codebook_t*) __calloc_heap_psram(s_nrOfCodebooks, sizeof(*s_codebooks));
 
     for(i = 0; i < s_nrOfCodebooks; i++){
@@ -620,7 +631,7 @@ int VORBISparseOGG(uint8_t *inbuf, int *bytesLeft){
 
     // log_i("headerSize %i, s_vorbisSegmentLength %i, s_vorbisSegmentTableSize %i", headerSize, s_vorbisSegmentLength, s_vorbisSegmentTableSize);
     if(firstPage || continuedPage || lastPage){
-    //    log_w("firstPage %i  continuedPage %i  lastPage %i", firstPage, continuedPage, lastPage);
+    // log_w("firstPage %i  continuedPage %i  lastPage %i", firstPage, continuedPage, lastPage);
     }
 
     *bytesLeft -= headerSize;
@@ -713,7 +724,7 @@ int vorbis_book_unpack(codebook_t *s) {
     switch(bitReader(1)) {
         case 0:
             /* unordered */
-            lengthlist = (char *)malloc(sizeof(*lengthlist) * s->entries);
+            lengthlist = (char *)__malloc_heap_psram(sizeof(*lengthlist) * s->entries);
 
             /* allocated but unused entries? */
             if(bitReader(1)) {
@@ -749,7 +760,7 @@ int vorbis_book_unpack(codebook_t *s) {
                 int32_t length = bitReader(5) + 1;
 
                 s->used_entries = s->entries;
-                lengthlist = (char *)malloc(sizeof(*lengthlist) * s->entries);
+                lengthlist = (char *)__malloc_heap_psram(sizeof(*lengthlist) * s->entries);
 
                 for(i = 0; i < s->entries;) {
                     int32_t num = bitReader(_ilog(s->entries - i));
@@ -3056,7 +3067,7 @@ int32_t *_vorbis_window(int left) {
     }
 }
 //---------------------------------------------------------------------------------------------------------------------
-void mdct_unroll_lap(int n0, int n1, int lW, int W, int *in, int *right, const int *w0, const int *w1, short int *out,
+void mdct_unroll_lap(int n0, int n1, int lW, int W, int32_t *in, int32_t *right, const int32_t *w0, const int32_t *w1, short int *out,
                      int step, int start, /* samples, this frame */
                      int end /* samples, this frame */) {
     int32_t       *l = in + (W && lW ? n1 >> 1 : n0 >> 1);

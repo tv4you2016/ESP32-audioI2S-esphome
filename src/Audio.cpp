@@ -5,8 +5,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.7s
- *  Updated on: Dec 01.2023
+ *  Version 3.0.7v
+ *  Updated on: Dec 04.2023
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -95,7 +95,7 @@ size_t AudioBuffer::bufferFilled() {
 }
 
 size_t AudioBuffer::getMaxAvailableBytes() {
-    if(m_writePtr >= m_readPtr) { m_dataLength = (m_writePtr - m_readPtr); }
+    if(m_writePtr >= m_readPtr) { m_dataLength = (m_writePtr - m_readPtr - 1); }
     else { m_dataLength = (m_endPtr - m_readPtr);}
     return m_dataLength;
 }
@@ -1669,7 +1669,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
 #ifndef AUDIO_NO_SD_FS												  
                 APIC_pos[numID3Header] = totalId3Size + id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = framesize;
-                log_e("APIC_pos %i APIC_size %i", APIC_pos[numID3Header], APIC_size[numID3Header]);
+               // log_e("APIC_pos %i APIC_size %i", APIC_pos[numID3Header], APIC_size[numID3Header]);
 
 #endif	// AUDIO_NO_SD_FS		   
             }
@@ -1753,7 +1753,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
 #ifndef AUDIO_NO_SD_FS
                 APIC_pos[numID3Header] = id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = universal_tmp;
-                if(m_f_Log) log_i("Attached picture seen at pos %d length %d", APIC_pos, APIC_size);
+                if(m_f_Log) log_i("Attached picture seen at pos %d length %d", APIC_pos[0], APIC_size[0]);
 #endif
             }
         }
@@ -1817,6 +1817,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
                 audiofile.seek(pos);  // the filepointer could have been changed by the user, set it back
             }
             numID3Header = 0;
+            totalId3Size = 0;
             for(int i = 0; i< 3; i++) APIC_pos[i] = 0; // delete all
             for(int i = 0; i< 3; i++) APIC_size[i] = 0; // delete all
 #endif  // AUDIO_NO_SD_FS   
@@ -2295,20 +2296,16 @@ void Audio::loop() {
 
         switch(getDatamode()) {
         case HTTP_RESPONSE_HEADER:
-            playAudioData(); // fill I2S DMA buffer
             if(!parseHttpResponseHeader()){
                 if(m_f_timeout) connecttohost(m_lastHost);
             }
             m_codec = CODEC_AAC;
             break;
         case AUDIO_PLAYLISTINIT:
-            playAudioData(); // fill I2S DMA buffer
             readPlayListData();
             break;
         case AUDIO_PLAYLISTDATA:
-            playAudioData(); // fill I2S DMA buffer
             host = parsePlaylist_M3U8();
-            playAudioData(); // fill I2S DMA buffer
             if(host) { // host contains the next playlist URL
                 httpPrint(host);
             }

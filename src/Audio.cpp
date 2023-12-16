@@ -5,8 +5,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.7v
- *  Updated on: Dec 04.2023
+ *  Version 3.0.7y
+ *  Updated on: Dec 15.2023
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -185,7 +185,9 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     m_i2s_std_cfg.slot_cfg.ws_width       = I2S_DATA_BIT_WIDTH_16BIT;  // WS signal width (i.e. the number of bclk ticks that ws signal is high)
     m_i2s_std_cfg.slot_cfg.ws_pol         = false;                     // WS signal polarity, set true to enable high lever first
     m_i2s_std_cfg.slot_cfg.bit_shift      = false;                     // Set to enable bit shift in Philips mode
+#ifdef CONFIG_IDF_TARGET_ESP32
     m_i2s_std_cfg.slot_cfg.msb_right      = true;                      // Set to place right channel data at the MSB in the FIFO
+#endif
     m_i2s_std_cfg.gpio_cfg.bclk           = I2S_GPIO_UNUSED;           // BCLK, Assignment in setPinout()
     m_i2s_std_cfg.gpio_cfg.din            = I2S_GPIO_UNUSED;           // not used
     m_i2s_std_cfg.gpio_cfg.dout           = I2S_GPIO_UNUSED;           // DOUT, Assignment in setPinout()
@@ -229,7 +231,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
         i2s_driver_install((i2s_port_t)m_i2s_num, &m_i2s_config, 0, NULL);
         m_f_forceMono = false;
     }
-    i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+
 #endif // ESP_IDF_VERSION_MAJOR == 5
     for(int i = 0; i < 3; i++) {
         m_filter[i].a0 = 1;
@@ -239,6 +241,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
         m_filter[i].b2 = 0;
     }
     computeLimit();  // first init, vol = 21, vol_steps = 21
+    i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
 }
 //---------------------------------------------------------------------------------------------------------------------
 void Audio::setBufsize(int rambuf_sz, int psrambuf_sz) {
@@ -477,7 +480,7 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
     strcat(rqh, "Host: ");
     strcat(rqh, hostwoext);
     strcat(rqh, "\r\n");
-    strcat(rqh, "Icy-MetaData:1\r\n");
+    strcat(rqh, "Icy-MetaData:2\r\n");
 
     if(auth > 0) {
         strcat(rqh, "Authorization: Basic ");
@@ -2690,7 +2693,7 @@ const char* Audio::parsePlaylist_M3U8() {
     else {
         if(f_EXTINF_found){
             if(f_mediaSeq_found){
-				if(m_playlistContent.size() == 0) return NULL;
+                if(m_playlistContent.size() == 0) return NULL;
                 uint64_t mediaSeq = m3u8_findMediaSeqInURL();
                 if(xMedSeq == 0 || xMedSeq == UINT64_MAX) {log_e("xMediaSequence not found"); connecttohost(m_lastHost);}
                 if(mediaSeq < xMedSeq){
@@ -3617,7 +3620,7 @@ bool Audio::parseHttpResponseHeader() {  // this is the response to a GET / requ
             continue;
         }
 
-        if(m_f_Log) { log_i("httpResponseHeader: %s", rhl); }
+        // log_i("httpResponseHeader: %s", rhl);
 
         int16_t posColon = indexOf(rhl, ":", 0);  // lowercase all letters up to the colon
         if(posColon >= 0) {
@@ -3710,6 +3713,15 @@ bool Audio::parseHttpResponseHeader() {  // this is the response to a GET / requ
             ;  // do nothing Ambient, Rock, etc
         }
 
+        else if(startsWith(rhl, "icy-logo:")) {
+            char* c_icylogo = (rhl + 9);  // Get logo URL
+            trim(c_icylogo);
+            if(strlen(c_icylogo) > 0) {
+                if(m_f_Log) AUDIO_INFO("icy-logo: %s", c_icylogo);
+                if(audio_icylogo) audio_icylogo(c_icylogo);
+            }
+        }
+
         else if(startsWith(rhl, "icy-br:")) {
             const char* c_bitRate = (rhl + 7);
             int32_t     br = atoi(c_bitRate);  // Found bitrate tag, read the bitrate in Kbit
@@ -3730,7 +3742,7 @@ bool Audio::parseHttpResponseHeader() {  // this is the response to a GET / requ
             char* c_icyname = (rhl + 9);  // Get station name
             trim(c_icyname);
             if(strlen(c_icyname) > 0) {
-                if(!m_f_Log) AUDIO_INFO("icy-name: %s", c_icyname);
+                if(m_f_Log) AUDIO_INFO("icy-name: %s", c_icyname);
                 if(audio_showstation) audio_showstation(c_icyname);
             }
         }
@@ -3757,7 +3769,7 @@ bool Audio::parseHttpResponseHeader() {  // this is the response to a GET / requ
         else if((startsWith(rhl, "transfer-encoding:"))) {
             if(endsWith(rhl, "chunked") || endsWith(rhl, "Chunked")) {  // Station provides chunked transfer
                 m_f_chunked = true;
-                if(!m_f_Log) AUDIO_INFO("chunked data transfer");
+                if(m_f_Log) AUDIO_INFO("chunked data transfer");
                 m_chunkcount = 0;  // Expect chunkcount in DATA
             }
         }

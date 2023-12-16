@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.7s
- *  Updated on: Dec 01.2023
+ *  Version 3.0.7y
+ *  Updated on: Dec 15.2023
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -49,6 +49,7 @@ extern __attribute__((weak)) void audio_showstation(const char*);
 extern __attribute__((weak)) void audio_bitrate(const char*);
 extern __attribute__((weak)) void audio_commercial(const char*);
 extern __attribute__((weak)) void audio_icyurl(const char*);
+extern __attribute__((weak)) void audio_icylogo(const char*);
 extern __attribute__((weak)) void audio_icydescription(const char*);
 extern __attribute__((weak)) void audio_lasthost(const char*);
 extern __attribute__((weak)) void audio_eof_speech(const char*);
@@ -486,7 +487,7 @@ private:
     std::vector<char*>    m_playlistURL;      // m3u8 streamURLs buffer
     std::vector<uint32_t> m_hashQueue;
 
-    const size_t    m_frameSizeWav    = 1024;
+    const size_t    m_frameSizeWav    = 2048;
     const size_t    m_frameSizeMP3    = 1600;
     const size_t    m_frameSizeAAC    = 1600;
     const size_t    m_frameSizeFLAC   = 4096 * 4;

@@ -1,12 +1,10 @@
-#include "esp_arduino_version.h"
-#include "assert.h"
 /*
  * Audio.cpp
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.7y
- *  Updated on: Dec 15.2023
+ *  Version 3.0.7z
+ *  Updated on: Dec 16.2023
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -231,6 +229,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
         i2s_driver_install((i2s_port_t)m_i2s_num, &m_i2s_config, 0, NULL);
         m_f_forceMono = false;
     }
+    i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
 
 #endif // ESP_IDF_VERSION_MAJOR == 5
     for(int i = 0; i < 3; i++) {
@@ -241,7 +240,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
         m_filter[i].b2 = 0;
     }
     computeLimit();  // first init, vol = 21, vol_steps = 21
-    i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+    
 }
 //---------------------------------------------------------------------------------------------------------------------
 void Audio::setBufsize(int rambuf_sz, int psrambuf_sz) {
@@ -2161,7 +2160,7 @@ uint32_t Audio::stopSong() {
     }
 #endif  // AUDIO_NO_SD_FS
     memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t));  // Clear OutputBuffer
-                                                        //     i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+    m_validSamples = 0;                                                   //     i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
     return pos;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -2174,9 +2173,8 @@ bool Audio::pauseResume() {
         m_f_running = !m_f_running;
         retVal = true;
         if(!m_f_running) {
-            memset(m_outBuff, 0,
-                   2048 * 2 * sizeof(uint16_t));  // Clear OutputBuffer
-                                                  //             i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+            memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t));  // Clear OutputBuffer
+            m_validSamples = 0;
         }
     }
 #ifndef AUDIO_MUTEX					  
@@ -4737,6 +4735,8 @@ bool Audio::setFilePos(uint32_t pos) {
     if(pos < m_audioDataStart) pos = m_audioDataStart;  // issue #96
     if(pos > m_file_size) pos = m_file_size;
     m_resumeFilePos = pos;
+	memset(m_outBuff, 0, 2048 * 2 * sizeof(int16_t));
+    m_validSamples = 0;
     return true;
 #endif  // AUDIO_NO_SD_FS																													   
 }

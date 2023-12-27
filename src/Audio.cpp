@@ -2180,7 +2180,7 @@ bool Audio::pauseResume() {
     return retVal;
 }
 //---------------------------------------------------------------------------------------------------------------------
-bool Audio::playChunk() {
+void Audio::playChunk() {
 
     int16_t sample[2];
 

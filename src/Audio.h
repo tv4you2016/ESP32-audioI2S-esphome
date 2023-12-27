@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.7z
- *  Updated on: Dec 16.2023
+ *  Version 3.0.8a
+ *  Updated on: Dec 25.2023
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -117,7 +117,7 @@ protected:
     size_t   m_freeSpace        = 0;
     size_t   m_writeSpace       = 0;
     size_t   m_dataLength       = 0;
-    size_t   m_resBuffSizeRAM   = 1600;     // reserved buffspace, >= one mp3  frame
+    size_t   m_resBuffSizeRAM   = 2048;     // reserved buffspace, >= one wav  frame
     size_t   m_resBuffSizePSRAM = 4096 * 4; // reserved buffspace, >= one flac frame
     size_t   m_maxBlockSize     = 1600;
     uint8_t* m_buffer           = NULL;
@@ -230,7 +230,7 @@ private:
     bool setBitsPerSample(int bits);
     bool setChannels(int channels);
     bool setBitrate(int br);
-    bool playChunk();
+    void playChunk();
     bool playSample(int16_t sample[2]);
     void computeVUlevel(int16_t sample[2]);
     void computeLimit();

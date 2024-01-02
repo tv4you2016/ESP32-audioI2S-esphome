@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.8a
- *  Updated on: Dec 25.2023
+ *  Version 3.0.8b
+ *  Updated on: Jan 02.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -1668,7 +1668,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
 #ifndef AUDIO_NO_SD_FS												  
                 APIC_pos[numID3Header] = totalId3Size + id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = framesize;
-               // log_e("APIC_pos %i APIC_size %i", APIC_pos[numID3Header], APIC_size[numID3Header]);
+            //    log_e("APIC_pos %i APIC_size %i", APIC_pos[numID3Header], APIC_size[numID3Header]);
 
 #endif	// AUDIO_NO_SD_FS		   
             }
@@ -2157,7 +2157,7 @@ uint32_t Audio::stopSong() {
     }
 #endif  // AUDIO_NO_SD_FS
     memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t));  // Clear OutputBuffer
-    m_validSamples = 0;                                                   //     i2s_zero_dma_buffer((i2s_port_t) m_i2s_num);
+    m_validSamples = 0;
     return pos;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -2284,6 +2284,7 @@ void Audio::loop() {
             host = parsePlaylist_M3U8();
             if(host) { // host contains the next playlist URL
                 httpPrint(host);
+                setDatamode(HTTP_RESPONSE_HEADER);
             }
             else { // host == NULL means connect to m3u8 URL
                 httpPrint(m_lastM3U8host);
@@ -2967,10 +2968,11 @@ void Audio::processLocalFile() {
             FLACDecoderReset();
         }
         if(m_codec == CODEC_MP3) { m_resumeFilePos = mp3_correctResumeFilePos(m_resumeFilePos); }
-        if(m_avr_bitrate) m_audioCurrentTime = ((m_resumeFilePos - m_audioDataStart) / m_avr_bitrate) * 8;
+        if(m_avr_bitrate) m_audioCurrentTime = ((double)(m_resumeFilePos - m_audioDataStart) / m_avr_bitrate) * 8;
         audiofile.seek(m_resumeFilePos);
         InBuff.resetBuffer();
         byteCounter = m_resumeFilePos;
+        f_fileDataComplete = false;  // #570 
 
         if(m_f_Log) {
             log_i("m_resumeFilePos %i", m_resumeFilePos);
@@ -3514,12 +3516,26 @@ void Audio::playAudioData() {
 bool Audio::parseHttpResponseHeader() {  // this is the response to a GET / request
 
     if(getDatamode() != HTTP_RESPONSE_HEADER) return false;
-    if(_client->available() == 0) return false;
-
-    char     rhl[512] = {0};  // responseHeaderline
-    bool     ct_seen = false;
+    
     uint32_t ctime = millis();
     uint32_t timeout = 2500;  // ms
+
+    static uint32_t stime;
+    static bool f_time = false;
+    if(_client->available() == 0){
+        if(!f_time){
+            stime = millis();
+            f_time = true;
+        }
+        if((millis() - stime) > timeout) {
+            log_e("timeout");
+            f_time = false;
+            return false;
+        }
+    }
+    f_time = false;
+    char     rhl[512] = {0};  // responseHeaderline
+    bool     ct_seen = false;
 
     while(true) {  // outer while
         uint16_t pos = 0;
@@ -4679,7 +4695,7 @@ bool Audio::setFilePos(uint32_t pos) {
     if(pos < m_audioDataStart) pos = m_audioDataStart;  // issue #96
     if(pos > m_file_size) pos = m_file_size;
     m_resumeFilePos = pos;
-	memset(m_outBuff, 0, 2048 * 2 * sizeof(int16_t));
+    memset(m_outBuff, 0, 2048 * 2 * sizeof(int16_t));
     m_validSamples = 0;
     return true;
 #endif  // AUDIO_NO_SD_FS																													   
@@ -4873,7 +4889,7 @@ bool Audio::playSample(int16_t sample[2]) {
     esp_err_t err = i2s_write((i2s_port_t)m_i2s_num, (const char*)&s32, sizeof(uint32_t), &m_i2s_bytesWritten, 0); // no wait
     #endif
     if(err != ESP_OK) {
-        log_e("ESP32 Errorcode %i", err);
+        if(err != 263) {log_e("ESP32 Errorcode: %i", err);}
         return false;
     }
     if(m_i2s_bytesWritten < 4) { // no more space in dma buffer  --> break and try it later

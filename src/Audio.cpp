@@ -4387,12 +4387,12 @@ void Audio::compute_audioCurrentTime(int bd) {
     static int      old_bitrate = 0;
     static uint64_t sum_bitrate = 0;
     static boolean  f_CBR = true;  // constant bitrate
+    static uint8_t  cnt = 0;
 
     if(m_codec == CODEC_MP3) { setBitrate(MP3GetBitrate()); }    // if not CBR, bitrate can be changed
     if(m_codec == CODEC_M4A) { setBitrate(AACGetBitrate()); }    // if not CBR, bitrate can be changed
     if(m_codec == CODEC_AAC) { setBitrate(AACGetBitrate()); }    // if not CBR, bitrate can be changed
     if(m_codec == CODEC_FLAC) { setBitrate(FLACGetBitRate()); }  // if not CBR, bitrate can be changed
-
 
     //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_avr_bitrate == 0) {  // first time

@@ -467,10 +467,9 @@ private:
 #endif  // AUDIO_NO_SD_FS																							 
     WiFiClient            client;       // @suppress("Abstract class cannot be instantiated")
     WiFiClientSecure      clientsecure; // @suppress("Abstract class cannot be instantiated")
-    WiFiClient*           _client = nullptr;
-#ifndef AUDIO_MUTEX											
+    WiFiClient*           _client = nullptr;										
     SemaphoreHandle_t     mutex_audio;
-#endif  // AUDIO_MUTEX
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #if ESP_IDF_VERSION_MAJOR == 5

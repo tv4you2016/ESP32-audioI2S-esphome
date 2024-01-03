@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.8b
- *  Updated on: Jan 02.2024
+ *  Version 3.0.8d1
+ *  Updated on: Jan 03.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -135,9 +135,9 @@ uint32_t AudioBuffer::getWritePos() { return m_writePtr - m_buffer; }
 uint32_t AudioBuffer::getReadPos() { return m_readPtr - m_buffer; }
 //---------------------------------------------------------------------------------------------------------------------
 Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLOT_MODE_STEREO */, uint8_t i2sPort) {
-#ifndef AUDIO_MUTEX
+
     mutex_audio = xSemaphoreCreateMutex();
-#endif  // AUDIO_MUTEX					  
+					  
 
 #ifdef AUDIO_LOG
     m_f_Log = true;
@@ -296,9 +296,9 @@ Audio::~Audio() {
     if(m_ibuff)       {free(m_ibuff);        m_ibuff        = NULL;}
     if(m_lastM3U8host){free(m_lastM3U8host); m_lastM3U8host = NULL;}
 
-#ifndef AUDIO_MUTEX					  
+				  
     vSemaphoreDelete(mutex_audio);
-#endif  // AUDIO_MUTEX					  
+					  
 }
 //---------------------------------------------------------------------------------------------------------------------
 void Audio::setDefaults() {
@@ -321,7 +321,7 @@ void Audio::setDefaults() {
     clientsecure.stop();
     _client = static_cast<WiFiClient*>(&client); /* default to *something* so that no NULL deref can happen */
     ts_parsePacket(0, 0, 0);                     // reset ts routine
-
+    if(m_lastM3U8host){free(m_lastM3U8host); m_lastM3U8host = NULL;}
     AUDIO_INFO("buffers freed, free Heap: %lu bytes", (long unsigned int)ESP.getFreeHeap());
 
     m_f_timeout = false;
@@ -375,16 +375,16 @@ void Audio::setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl) {
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
     // user and pwd for authentification only, can be empty
-#ifndef AUDIO_MUTEX
+
     xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
-#endif  // AUDIO_MUTEX					  
+					  
 
     if(host == NULL) {
         AUDIO_INFO("Hostaddress is empty");
         stopSong();
-#ifndef AUDIO_MUTEX
+
         xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
         return false;
     }
 
@@ -393,9 +393,9 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
     if(lenHost >= 512 - 10) {
         AUDIO_INFO("Hostaddress is too long");
         stopSong();
-#ifndef AUDIO_MUTEX
+
         xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
         return false;
     }
 
@@ -560,9 +560,9 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
         free(h_host);
         h_host = NULL;
     }
-#ifndef AUDIO_MUTEX					  
+				  
     xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
     return res;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -722,13 +722,10 @@ void Audio::UTF8toASCII(char* str){
 bool Audio::connecttoSD(const char* path, int32_t resumeFilePos) { return connecttoFS(SD, path, resumeFilePos); }
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
-#ifndef AUDIO_MUTEX															 
+														 
     xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);  // #3
-#endif                                                  // AUDIO_MUTEX
-    if(strlen(path) > 255) {
-#ifndef AUDIO_MUTEX										 
-        xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX			 
+    if(strlen(path) > 255) {							 
+        xSemaphoreGiveRecursive(mutex_audio);			 
         return false;
     }
 
@@ -757,9 +754,9 @@ bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
             vTaskDelay(2);
             audio_info("Failed to open file for reading");
         }
-#ifndef AUDIO_MUTEX
+
         xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
         return false;
     }
 
@@ -792,17 +789,17 @@ bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
     if(ret) m_f_running = true;
     else
         audiofile.close();
-#ifndef AUDIO_MUTEX
+
   xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
     return ret;
 }
 #endif  // AUDIO_NO_SD_FS
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttospeech(const char* speech, const char* lang) {
-#ifndef AUDIO_MUTEX
+
   xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY);
-#endif  // AUDIO_MUTEX
+
 
     setDefaults();
     char host[] = "translate.google.com.vn";
@@ -814,9 +811,7 @@ bool Audio::connecttospeech(const char* speech, const char* lang) {
     char* speechBuff = (char*)malloc(speechBuffLen);
     if(!speechBuff) {
         log_e("out of memory");
-#ifndef AUDIO_MUTEX
-    xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+    	xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
     memcpy(speechBuff, speech, speechLen);
@@ -846,9 +841,9 @@ bool Audio::connecttospeech(const char* speech, const char* lang) {
     _client = static_cast<WiFiClient*>(&client);
     if(!_client->connect(host, 80)) {
         log_e("Connection failed");
-#ifndef AUDIO_MUTEX
+
 		xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
         return false;
     }
     _client->print(resp);
@@ -858,9 +853,9 @@ bool Audio::connecttospeech(const char* speech, const char* lang) {
     m_f_ssl = false;
     m_f_tts = true;
     setDatamode(HTTP_RESPONSE_HEADER);
-#ifndef AUDIO_MUTEX
+
     xSemaphoreGiveRecursive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
     return true;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -2162,9 +2157,9 @@ uint32_t Audio::stopSong() {
 }
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::pauseResume() {
-#ifndef AUDIO_MUTEX					  
+				  
     xSemaphoreTake(mutex_audio, portMAX_DELAY);
-#endif  // AUDIO_MUTEX					  
+					  
     bool retVal = false;
     if(getDatamode() == AUDIO_LOCALFILE || m_streamType == ST_WEBSTREAM) {
         m_f_running = !m_f_running;
@@ -2174,9 +2169,9 @@ bool Audio::pauseResume() {
             m_validSamples = 0;
         }
     }
-#ifndef AUDIO_MUTEX					  
+				  
     xSemaphoreGive(mutex_audio);
-#endif  // AUDIO_MUTEX					  
+					  
     return retVal;
 }
 //---------------------------------------------------------------------------------------------------------------------
@@ -2246,9 +2241,9 @@ void Audio::playChunk() {
 void Audio::loop() {
     if(!m_f_running) return;
 
-#ifndef AUDIO_MUTEX					  
+					  
     xSemaphoreTake(mutex_audio, portMAX_DELAY);
-#endif 
+
     if(m_playlistFormat != FORMAT_M3U8) { // normal process
         switch(getDatamode()) {
 #ifndef AUDIO_NO_SD_FS			
@@ -2287,7 +2282,8 @@ void Audio::loop() {
                 setDatamode(HTTP_RESPONSE_HEADER);
             }
             else { // host == NULL means connect to m3u8 URL
-                httpPrint(m_lastM3U8host);
+				if(host) httpPrint(m_lastM3U8host);
+                else httpPrint(m_lastHost); // if url has no first redirection
                 setDatamode(HTTP_RESPONSE_HEADER); // we have a new playlist now
             }
 
@@ -2303,9 +2299,9 @@ void Audio::loop() {
             break;
         }
     }
-#ifndef AUDIO_MUTEX							  
+						  
     xSemaphoreGive(mutex_audio);
-#endif  // AUDIO_MUTEX
+
 }
 //---------------------------------------------------------------------------------------------------------------------
 bool Audio::readPlayListData() {
@@ -4396,21 +4392,20 @@ void Audio::compute_audioCurrentTime(int bd) {
     if(m_codec == CODEC_M4A) { setBitrate(AACGetBitrate()); }    // if not CBR, bitrate can be changed
     if(m_codec == CODEC_AAC) { setBitrate(AACGetBitrate()); }    // if not CBR, bitrate can be changed
     if(m_codec == CODEC_FLAC) { setBitrate(FLACGetBitRate()); }  // if not CBR, bitrate can be changed
-    if(!getBitRate()) return;
+
 
     //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_avr_bitrate == 0) {  // first time
-        loop_counter = 0;
+        loop_counter = 1;
         old_bitrate = 0;
         sum_bitrate = 0;
         f_CBR = true;
         m_avr_bitrate = getBitRate();
         old_bitrate = getBitRate();
+        cnt = 0;
     }
-    if(!m_avr_bitrate) return;
+    if(!getBitRate()) return;
     //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-    if(loop_counter < 1000) loop_counter++;
 
     if((old_bitrate != getBitRate()) && f_CBR) {
         if(audio_info) audio_info("VBR recognized, audioFileDuration is estimated");
@@ -4418,27 +4413,20 @@ void Audio::compute_audioCurrentTime(int bd) {
     }
     old_bitrate = getBitRate();
 
-    if(!f_CBR) {
-        if(loop_counter > 20 && loop_counter < 200) {
-            // if VBR: m_avr_bitrate is average of the first values of m_bitrate
-            sum_bitrate += getBitRate();
-            m_avr_bitrate = sum_bitrate / (loop_counter - 20);
-            if(loop_counter == 199 && m_resumeFilePos >= 0) {
-                m_audioCurrentTime =
-                    ((getFilePos() - m_audioDataStart - inBufferFilled()) / m_avr_bitrate) * 8;  // #293
-            }
-        }
+    if(loop_counter < 10000){ // then the bit rate is determined with sufficient precision
+        sum_bitrate += getBitRate();
+        m_avr_bitrate = sum_bitrate / loop_counter;
+        loop_counter++;  
     }
-    else {
-        if(loop_counter == 2) {
-            m_avr_bitrate = getBitRate();
-            if(m_resumeFilePos >= 0) {  // if connecttoFS() is called with resumeFilePos != 0
-                m_audioCurrentTime =
-                    ((getFilePos() - m_audioDataStart - inBufferFilled()) / m_avr_bitrate) * 8;  // #293
-            }
-        }
-    }
+
     m_audioCurrentTime += ((float)bd / m_avr_bitrate) * 8;
+
+
+    if(cnt == 1){
+        m_audioCurrentTime = ((float)(getFilePos() - m_audioDataStart - inBufferFilled()) / m_avr_bitrate) * 8;  // #293
+    }
+    cnt++;
+    if(cnt == 100) cnt = 0;
 }
 //---------------------------------------------------------------------------------------------------------------------
 void Audio::printDecodeError(int r) {

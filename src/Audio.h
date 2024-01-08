@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.8b
- *  Updated on: Jan 02.2024
+ *  Version 3.0.8e
+ *  Updated on: Jan 04.2024
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -16,13 +16,8 @@
 #include <esp32-hal-log.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#ifndef AUDIO_NO_SD_FS					  
-#include <SPI.h>
-#include <SD.h>
-#include <SD_MMC.h>
-#include <SPIFFS.h>
+#ifndef AUDIO_NO_SD_FS	
 #include <FS.h>
-#include <FFat.h>
 #endif // AUDIO_NO_SD_FS
 #include <atomic>
 
@@ -39,10 +34,10 @@ using namespace std;
 
 extern __attribute__((weak)) void audio_info(const char*);
 extern __attribute__((weak)) void audio_id3data(const char*); //ID3 metadata
-#ifndef AUDIO_NO_SD_FS					  
+#ifndef AUDIO_NO_SD_FS
 extern __attribute__((weak)) void audio_id3image(File& file, const size_t pos, const size_t size); //ID3 metadata image
 extern __attribute__((weak)) void audio_id3lyrics(File& file, const size_t pos, const size_t size); //ID3 metadata lyrics
-#endif	  
+#endif
 extern __attribute__((weak)) void audio_eof_mp3(const char*); //end of mp3 file
 extern __attribute__((weak)) void audio_showstreamtitle(const char*);
 extern __attribute__((weak)) void audio_showstation(const char*);
@@ -56,8 +51,6 @@ extern __attribute__((weak)) void audio_eof_speech(const char*);
 extern __attribute__((weak)) void audio_eof_stream(const char*); // The webstream comes to an end
 extern __attribute__((weak)) void audio_process_extern(int16_t* buff, uint16_t len, bool *continueI2S); // record audiodata or send via BT
 extern __attribute__((weak)) void audio_process_i2s(uint32_t* sample, bool *continueI2S); // record audiodata or send via BT
-
-
 
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -139,11 +132,10 @@ public:
     ~Audio();
     void setBufsize(int rambuf_sz, int psrambuf_sz);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
-    bool connecttospeech(const char* speech, const char* lang);				  
+    bool connecttospeech(const char* speech, const char* lang);
 #ifndef AUDIO_NO_SD_FS
     bool connecttoFS(fs::FS &fs, const char* path, int32_t resumeFilePos = -1);
-    bool connecttoSD(const char* path, int32_t resumeFilePos = -1);
-#endif   												  
+#endif
     bool setFileLoop(bool input);//TEST loop
     void setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl);
     bool setAudioPlayPosition(uint16_t sec);
@@ -197,9 +189,9 @@ private:
     void setDefaults(); // free buffers and set defaults
     void initInBuff();
     bool httpPrint(const char* host);
-#ifndef AUDIO_NO_SD_FS									 
+#ifndef AUDIO_NO_SD_FS	
     void processLocalFile();
-#endif // AUDIO_NO_SD_FS							
+#endif // AUDIO_NO_SD_FS
     void processWebStream();
     void processWebFile();
     void processWebStreamTS();
@@ -464,10 +456,10 @@ private:
     } pid_array;
 #ifndef AUDIO_NO_SD_FS
     File                  audiofile;    // @suppress("Abstract class cannot be instantiated")
-#endif  // AUDIO_NO_SD_FS																							 
+#endif  // AUDIO_NO_SD_FS		
     WiFiClient            client;       // @suppress("Abstract class cannot be instantiated")
     WiFiClientSecure      clientsecure; // @suppress("Abstract class cannot be instantiated")
-    WiFiClient*           _client = nullptr;										
+    WiFiClient*           _client = nullptr;
     SemaphoreHandle_t     mutex_audio;
 
 #pragma GCC diagnostic push

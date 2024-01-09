@@ -21,6 +21,6 @@
   "license": "GPL-3.0",
   "homepage": "https://github.com/tv4you2016/ESP32-audioI2S-esphome",
   "dependencies": {},
-  "frameworks": "arduino",
+  "frameworks": ["arduino", "espidf"],
   "platforms": "espressif32"
 }

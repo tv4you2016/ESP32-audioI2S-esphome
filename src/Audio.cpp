@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.8j
- *  Updated on: Feb 02.2024
+ *  Version 3.0.8l
+ *  Updated on: Feb 08.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -712,31 +712,74 @@ void Audio::UTF8toASCII(char* str) {
 // clang-format on
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
-    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY); // #3
 
-    if(strlen(path) > 255) {
-        xSemaphoreGiveRecursive(mutex_audio);
+    if(!path) { // guard
+        AUDIO_INFO("The given path is empty");
         return false;
     }
 
+    xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY); // #3
+
     m_resumeFilePos = resumeFilePos;
-    char audioName[256];
     setDefaults(); // free buffers an set defaults
-    memcpy(audioName, path, strlen(path) + 1);
-    if(audioName[0] != '/') {
-        for(int i = 255; i > 0; i--) { audioName[i] = audioName[i - 1]; }
-        audioName[0] = '/';
-    }
 
-    AUDIO_INFO("Reading file: \"%s\"", audioName);
-    vTaskDelay(2);
+    { // open audiofile scope
+        const char *audioName = nullptr; // pointer for the final file path
+        char *audioNameAlternative = nullptr; // possible buffer for alternative versions of the audioName
 
-    if(fs.exists(audioName)) {
-        audiofile = fs.open(audioName); // #86
-    }
-    else {
-        UTF8toASCII(audioName);
-        if(fs.exists(audioName)) { audiofile = fs.open(audioName); }
+        if (fs.exists(path)) { // use given path if it exists (issue #86)
+            audioName = path;
+        }
+        else { // try alternative path variants
+            size_t len = strlen(path);
+            size_t copyMemSize = len + 2; // 2 extra bytes for possible leading / and \0 terminator
+            size_t copyOffset = 0;
+
+            audioNameAlternative = (char *) __malloc_heap_psram(copyMemSize);
+            if (!audioNameAlternative) {
+                log_e("out of memory");
+                xSemaphoreGiveRecursive(mutex_audio);
+                return false;
+            }
+
+            // make sure the path starts with a /
+            if (path[0] != '/') {
+                audioNameAlternative[0] = '/';
+                copyOffset = 1;
+            }
+
+            // copy original path to audioNameAlternative buffer
+            strncpy(audioNameAlternative + copyOffset, path, copyMemSize - copyOffset);
+
+            if (fs.exists(audioNameAlternative)) { // use path with extra leading / if it exists
+                audioName = audioNameAlternative;
+            }
+            else { // use ASCII version of the path if it exists
+                UTF8toASCII(audioNameAlternative);
+                if (fs.exists(audioNameAlternative)) {
+                    audioName = audioNameAlternative;
+                }
+            }
+        }
+
+        if (!audioName) {
+            AUDIO_INFO("File doesn't exist: \"%s\"", path);
+            xSemaphoreGiveRecursive(mutex_audio);
+            if (audioNameAlternative) {
+                free(audioNameAlternative);
+            }
+            return false;
+        }
+
+        AUDIO_INFO("Reading file: \"%s\"", audioName);
+        vTaskDelay(2);
+
+        audiofile = fs.open(audioName);
+
+        // free audioNameAlternative if used
+        if (audioNameAlternative) {
+            free(audioNameAlternative);
+        }
     }
 
     if(!audiofile) {
@@ -1721,10 +1764,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
         memcpy(value, (data + 7), dataLen);
         value[dataLen + 1] = 0;
         m_chbuf[0] = 0;
-
-
         if(startsWith(tag, "PIC")) { // image embedded in header
-
             if(getDatamode() == AUDIO_LOCALFILE) {
 #ifndef AUDIO_NO_SD_FS
                 APIC_pos[numID3Header] = id3Size - remainingHeaderBytes;
@@ -2131,6 +2171,7 @@ uint32_t Audio::stopSong() {
     }
 #endif  // AUDIO_NO_SD_FS
     memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t)); // Clear OutputBuffer
+	memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
     m_validSamples = 0;
     return pos;
 }
@@ -2593,7 +2634,7 @@ const char* Audio::parsePlaylist_M3U8() {
                     if(indexOf(tmp, llasc) > 0) {
                         m_playlistURL.insert(m_playlistURL.begin(), strdup(tmp));
                         xMedSeq++;
-                    }					
+                    }
                     else{
                         lltoa(xMedSeq + 1, llasc, 10);
                         if(indexOf(tmp, llasc) > 0) {
@@ -2687,7 +2728,7 @@ const char* Audio::parsePlaylist_M3U8() {
             } // f_medSeq_found
         }
     }
-	playAudioData(); // avoid audio gap
+    playAudioData(); // avoid audio gap
     return NULL;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2989,7 +3030,7 @@ void Audio::processLocalFile() {
                         }
                     }
                 }
-                AUDIO_INFO("audio file is corrupt --> send EOF"); // no return, fall through
+                if(m_codec == CODEC_MP3) AUDIO_INFO("audio file is corrupt --> send EOF"); // no return, fall through
             }
         }
 
@@ -3015,6 +3056,7 @@ void Audio::processLocalFile() {
         if(m_codec == CODEC_FLAC) FLACDecoder_FreeBuffers();
         if(m_codec == CODEC_OPUS) OPUSDecoder_FreeBuffers();
         if(m_codec == CODEC_VORBIS) VORBISDecoder_FreeBuffers();
+        setSampleRate(16000); // workaround OPUS48k ESP32-S3 ESP-IDF Version: 4.4.5 - reduce sampRate because need DMA interrupt
         AUDIO_INFO("End of file \"%s\"", afn);
         if(audio_eof_mp3) audio_eof_mp3(afn);
         if(afn) {
@@ -4299,6 +4341,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     }
     // status: bytesDecoded > 0 and m_decodeError >= 0
     char* st = NULL;
+    std::vector<uint32_t> vec;
     switch(m_codec) {
         case CODEC_WAV:     memmove(m_outBuff, data, len); // copy len data in outbuff and set validsamples and bytesdecoded=len
                             if(getBitsPerSample() == 16) m_validSamples = len / (2 * getChannels());
@@ -4325,6 +4368,14 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 AUDIO_INFO(st);
                                 if(audio_showstreamtitle) audio_showstreamtitle(st);
                             }
+                            vec = OPUSgetMetadataBlockPicture();
+                            if(vec.size() > 0){ // get blockpic data
+                                // log_i("---------------------------------------------------------------------------");
+                                // log_i("ogg metadata blockpicture found:");
+                                // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
+                                // log_i("---------------------------------------------------------------------------");
+                                if(audio_oggimage) audio_oggimage(audiofile, vec);
+                            }
                             break;
         case CODEC_VORBIS:  if(m_decodeError == VORBIS_PARSE_OGG_DONE) return bytesDecoded; // nothing to play
                             m_validSamples = VORBISGetOutputSamps();
@@ -4332,6 +4383,14 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                             if(st) {
                                 AUDIO_INFO(st);
                                 if(audio_showstreamtitle) audio_showstreamtitle(st);
+                            }
+                            vec = VORBISgetMetadataBlockPicture();
+                            if(vec.size() > 0){ // get blockpic data
+                                // log_i("---------------------------------------------------------------------------");
+                                // log_i("ogg metadata blockpicture found:");
+                                // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
+                                // log_i("---------------------------------------------------------------------------");
+                                if(audio_oggimage) audio_oggimage(audiofile, vec);
                             }
                             break;
     }
@@ -5931,14 +5990,11 @@ uint8_t Audio::determineOggCodec(uint8_t* data, uint16_t len) {
     }
     data += 27;
     idx = specialIndexOf(data, "OpusHead", 40);
-    if(idx >= 0) return CODEC_OPUS;
+    if(idx >= 0) { return CODEC_OPUS; }
     idx = specialIndexOf(data, "fLaC", 40);
-    if(idx >= 0) return CODEC_FLAC;
+    if(idx >= 0) { return CODEC_FLAC; }
     idx = specialIndexOf(data, "vorbis", 40);
-    if(idx >= 0) {
-        log_i("vorbis");
-        return CODEC_VORBIS;
-    }
+    if(idx >= 0) { return CODEC_VORBIS; }
     return CODEC_NONE;
 }
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

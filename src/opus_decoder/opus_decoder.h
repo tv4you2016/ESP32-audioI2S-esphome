@@ -3,9 +3,13 @@
 //#pragma GCC optimize ("O3")
 //#pragma GCC diagnostic ignored "-Wnarrowing"
 
-#include "Arduino.h"
+#include <stdint.h>
+#include <memory.h>
+#include <vector>
+using namespace std;
 
-enum : int8_t  {OPUS_PARSE_OGG_DONE = 100,
+enum : int8_t  {OPUS_CONTINUE = 110,
+                OPUS_PARSE_OGG_DONE = 100,
                 ERR_OPUS_NONE = 0,
                 ERR_OPUS_CHANNELS_OUT_OF_RANGE = -1,
                 ERR_OPUS_INVALID_SAMPLERATE = -2,
@@ -28,23 +32,28 @@ enum : int8_t  {OPUS_PARSE_OGG_DONE = 100,
                 ERR_OPUS_CELT_END_BAND = -26,
                 ERR_CELT_OPUS_INTERNAL_ERROR = -27};
 
-bool     OPUSDecoder_AllocateBuffers();
-void     OPUSDecoder_FreeBuffers();
-void     OPUSDecoder_ClearBuffers();
-void     OPUSsetDefaults();
-int      OPUSDecode(uint8_t *inbuf, int *bytesLeft, short *outbuf);
-uint8_t  OPUSGetChannels();
-uint32_t OPUSGetSampRate();
-uint8_t  OPUSGetBitsPerSample();
-uint32_t OPUSGetBitRate();
-uint16_t OPUSGetOutputSamps();
-char    *OPUSgetStreamTitle();
-int      OPUSFindSyncWord(unsigned char *buf, int nBytes);
-int      OPUSparseOGG(uint8_t *inbuf, int *bytesLeft);
-int      parseOpusHead(uint8_t *inbuf, int nBytes);
-int      parseOpusComment(uint8_t *inbuf, int nBytes);
-int      parseOpusTOC(uint8_t TOC_Byte);
-int32_t  opus_packet_get_samples_per_frame(const uint8_t *data, int32_t Fs);
+bool             OPUSDecoder_AllocateBuffers();
+void             OPUSDecoder_FreeBuffers();
+void             OPUSDecoder_ClearBuffers();
+void             OPUSsetDefaults();
+int              OPUSDecode(uint8_t* inbuf, int* bytesLeft, short* outbuf);
+int8_t           opus_FramePacking_Code0(uint8_t *inbuf, int *bytesLeft, short *outbuf, int packetLen, uint16_t samplesPerFrame);
+int8_t           opus_FramePacking_Code1(uint8_t *inbuf, int *bytesLeft, short *outbuf, int packetLen, uint16_t samplesPerFrame, uint8_t* frameCount);
+int8_t           opus_FramePacking_Code2(uint8_t *inbuf, int *bytesLeft, short *outbuf, int packetLen, uint16_t samplesPerFrame, uint8_t* frameCount);
+int8_t           opus_FramePacking_Code3(uint8_t *inbuf, int *bytesLeft, short *outbuf, int packetLen, uint16_t samplesPerFrame, uint8_t* frameCount);
+uint8_t          OPUSGetChannels();
+uint32_t         OPUSGetSampRate();
+uint8_t          OPUSGetBitsPerSample();
+uint32_t         OPUSGetBitRate();
+uint16_t         OPUSGetOutputSamps();
+char*            OPUSgetStreamTitle();
+vector<uint32_t> OPUSgetMetadataBlockPicture();
+int              OPUSFindSyncWord(unsigned char* buf, int nBytes);
+int              OPUSparseOGG(uint8_t* inbuf, int* bytesLeft);
+int              parseOpusHead(uint8_t* inbuf, int nBytes);
+int              parseOpusComment(uint8_t* inbuf, int nBytes);
+int8_t           parseOpusTOC(uint8_t TOC_Byte);
+int32_t          opus_packet_get_samples_per_frame(const uint8_t* data, int32_t Fs);
 
 // some helper functions
 int OPUS_specialIndexOf(uint8_t* base, const char* str, int baselen, bool exact = false);

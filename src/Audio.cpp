@@ -2171,7 +2171,7 @@ uint32_t Audio::stopSong() {
     }
 #endif  // AUDIO_NO_SD_FS
     memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t)); // Clear OutputBuffer
-	memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
+    memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
     m_validSamples = 0;
     return pos;
 }

@@ -4374,7 +4374,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // log_i("ogg metadata blockpicture found:");
                                 // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
                                 // log_i("---------------------------------------------------------------------------");
-                            #ifdef AUDIO_NO_SD_FS    
+                            #ifndef AUDIO_NO_SD_FS    
                                 if(audio_oggimage) audio_oggimage(audiofile, vec);
                             #endif
                             }
@@ -4392,7 +4392,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // log_i("ogg metadata blockpicture found:");
                                 // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
                                 // log_i("---------------------------------------------------------------------------");
-                            #ifdef AUDIO_NO_SD_FS
+                            #ifndef AUDIO_NO_SD_FS
                                 if(audio_oggimage) audio_oggimage(audiofile, vec);
                             #endif
                             }

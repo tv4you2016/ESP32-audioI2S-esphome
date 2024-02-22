@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.8l
- *  Updated on: Feb 08.2024
+ *  Version 3.0.8p
+ *  Updated on: Feb 20.2024
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -132,6 +132,7 @@ public:
     Audio(bool internalDAC = false, uint8_t channelEnabled = 3, uint8_t i2sPort = I2S_NUM_0); // #99
     ~Audio();
     void setBufsize(int rambuf_sz, int psrambuf_sz);
+    bool openai_speech(const String& api_key, const String& model, const String& input, const String& voice, const String& response_format, const String& speed);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
     bool connecttospeech(const char* speech, const char* lang);
 #ifndef AUDIO_NO_SD_FS

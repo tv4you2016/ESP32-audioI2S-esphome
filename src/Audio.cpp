@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.8p
- *  Updated on: Feb 20.2024
+ *  Version 3.0.8q
+ *  Updated on: Mar 04.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -352,7 +352,7 @@ void Audio::setDefaults() {
     m_bitRate = 0;         // Bitrate still unknown
     m_bytesNotDecoded = 0; // counts all not decodable bytes
     m_chunkcount = 0;      // for chunked streams
-    m_byteCounter = 0;     // count received data
+   // byteCounter = 0;     // count received data
     m_contentlength = 0;   // If Content-Length is known, count it
     m_curSample = 0;
     m_metaint = 0;        // No metaint yet
@@ -370,7 +370,7 @@ void Audio::setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl) {
     if(timeout_ms_ssl) m_timeout_ms_ssl = timeout_ms_ssl;
 }
 
-/* 
+/*
     Text to speech API provides a speech endpoint based on our TTS (text-to-speech) model.
     More info: https://platform.openai.com/docs/guides/text-to-speech/text-to-speech
 
@@ -2771,7 +2771,7 @@ const char* Audio::parsePlaylist_M3U8() {
                         lltoa(xMedSeq + 1, llasc, 10);
                         if(indexOf(tmp, llasc) > 0) {
                             m_playlistURL.insert(m_playlistURL.begin(), strdup(tmp));
-                            log_w("mediaseq %lu skipped", xMedSeq);
+                            log_w("mediaseq %llu skipped", xMedSeq);
                             xMedSeq+= 2;
                         }
                     }
@@ -3046,12 +3046,14 @@ void Audio::processLocalFile() {
     const uint32_t  maxFrameSize = InBuff.getMaxBlockSize(); // every mp3/aac frame is not bigger
     static bool     f_stream;
     static bool     f_fileDataComplete;
+    static uint32_t byteCounter; // count received data
     uint32_t        availableBytes = 0;
 
     if(m_f_firstCall) { // runs only one time per connection, prepare for start
         m_f_firstCall = false;
         f_stream = false;
         f_fileDataComplete = false;
+        byteCounter = 0;
         ctime = millis();
         if(m_codec == CODEC_M4A) seek_m4a_stsz(); // determine the pos of atom stsz
         if(m_codec == CODEC_M4A) seek_m4a_ilst(); // looking for metadata
@@ -3062,16 +3064,16 @@ void Audio::processLocalFile() {
     availableBytes = 16 * 1024; // set some large value
 
     availableBytes = min(availableBytes, (uint32_t)InBuff.writeSpace());
-    availableBytes = min(availableBytes, audiofile.size() - m_byteCounter);
+    availableBytes = min(availableBytes, audiofile.size() - byteCounter);
     if(m_contentlength) {
         if(m_contentlength > getFilePos()) availableBytes = min(availableBytes, m_contentlength - getFilePos());
     }
-    if(m_audioDataSize) { availableBytes = min(availableBytes, m_audioDataSize + m_audioDataStart - m_byteCounter); }
+    if(m_audioDataSize) { availableBytes = min(availableBytes, m_audioDataSize + m_audioDataStart - byteCounter); }
 
     int32_t bytesAddedToBuffer = audiofile.read(InBuff.getWritePtr(), availableBytes);
 
     if(bytesAddedToBuffer > 0) {
-        m_byteCounter += bytesAddedToBuffer; // Pull request #42
+        byteCounter += bytesAddedToBuffer; // Pull request #42
         InBuff.bytesWritten(bytesAddedToBuffer);
     }
     if(!f_stream) {
@@ -3107,13 +3109,13 @@ void Audio::processLocalFile() {
             return;
         }
         else {
-            if((InBuff.freeSpace() > maxFrameSize) && (m_file_size - m_byteCounter) > maxFrameSize && availableBytes) {
+            if((InBuff.freeSpace() > maxFrameSize) && (m_file_size - byteCounter) > maxFrameSize && availableBytes) {
                 // fill the buffer before playing
                 return;
             }
 
             f_stream = true;
-            AUDIO_INFO("stream ready");
+            AUDIO_INFO("stream ready_1");
             if(m_f_Log) log_i("m_audioDataStart %d", m_audioDataStart);
         }
     }
@@ -3132,7 +3134,7 @@ void Audio::processLocalFile() {
         if(m_avr_bitrate) m_audioCurrentTime = ((double)(m_resumeFilePos - m_audioDataStart) / m_avr_bitrate) * 8;
         audiofile.seek(m_resumeFilePos);
         InBuff.resetBuffer();
-        m_byteCounter = m_resumeFilePos;
+        byteCounter = m_resumeFilePos;
         f_fileDataComplete = false; // #570
 
         if(m_f_Log) {
@@ -3170,7 +3172,7 @@ void Audio::processLocalFile() {
             setFilePos(m_audioDataStart);
             if(m_codec == CODEC_FLAC) FLACDecoderReset();
             m_audioCurrentTime = 0;
-            m_byteCounter = m_audioDataStart;
+            byteCounter = m_audioDataStart;
             f_fileDataComplete = false;
             return;
         } // loop
@@ -3195,8 +3197,8 @@ void Audio::processLocalFile() {
         }
         return;
     }
-    if(m_byteCounter == audiofile.size()) { f_fileDataComplete = true; }
-    if(m_byteCounter == m_audioDataSize + m_audioDataStart) { f_fileDataComplete = true; }
+    if(byteCounter == audiofile.size()) { f_fileDataComplete = true; }
+    if(byteCounter == m_audioDataSize + m_audioDataStart) { f_fileDataComplete = true; }
     // play audio data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(f_stream) { playAudioData(); }
 }
@@ -3284,6 +3286,7 @@ void Audio::processWebFile() {
     const uint32_t  maxFrameSize = InBuff.getMaxBlockSize(); // every mp3/aac frame is not bigger
     static bool     f_stream;                                // first audio data received
     static bool     f_webFileDataComplete;                   // all file data received
+    static uint32_t byteCounter; 
     static uint32_t chunkSize;                               // chunkcount read from stream
     static size_t   audioDataCount;                          // counts the decoded audiodata only
 
@@ -3293,6 +3296,7 @@ void Audio::processWebFile() {
         m_t0 = millis();
         f_webFileDataComplete = false;
         f_stream = false;
+        byteCounter = 0;
         chunkSize = 0;
         audioDataCount = 0;
     }
@@ -3319,20 +3323,20 @@ void Audio::processWebFile() {
     }
 
     availableBytes = min((uint32_t)InBuff.writeSpace(), availableBytes);
-    availableBytes = min(m_contentlength - m_byteCounter, availableBytes);
-    if(m_audioDataSize) availableBytes = min(m_audioDataSize - (m_byteCounter - m_audioDataStart), availableBytes);
+    availableBytes = min(m_contentlength - byteCounter, availableBytes);
+    if(m_audioDataSize) availableBytes = min(m_audioDataSize - (byteCounter - m_audioDataStart), availableBytes);
 
     int16_t bytesAddedToBuffer = _client->read(InBuff.getWritePtr(), availableBytes);
 
     if(bytesAddedToBuffer > 0) {
-        m_byteCounter += bytesAddedToBuffer; // Pull request #42
+        byteCounter += bytesAddedToBuffer; // Pull request #42
         if(m_f_chunked) m_chunkcount -= bytesAddedToBuffer;
         if(m_controlCounter == 100) audioDataCount += bytesAddedToBuffer;
         InBuff.bytesWritten(bytesAddedToBuffer);
     }
 
     if(!f_stream) {
-        if((InBuff.freeSpace() > maxFrameSize) && (m_byteCounter < m_contentlength)) return;
+        if((InBuff.freeSpace() > maxFrameSize) && (byteCounter < m_contentlength)) return;
         f_stream = true; // ready to play the audio data
         uint16_t filltime = millis() - m_t0;
         AUDIO_INFO("stream ready, buffer filled in %d ms", filltime);
@@ -3405,8 +3409,8 @@ void Audio::processWebFile() {
         return;
     }
 
-    if(m_byteCounter == m_contentlength) { f_webFileDataComplete = true; }
-    if(m_byteCounter - m_audioDataStart == m_audioDataSize) { f_webFileDataComplete = true; }
+    if(byteCounter == m_contentlength) { f_webFileDataComplete = true; }
+    if(byteCounter - m_audioDataStart == m_audioDataSize) { f_webFileDataComplete = true; }
 
     // play audio data - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(f_stream) { playAudioData(); }
@@ -3419,6 +3423,7 @@ void Audio::processWebStreamTS() {
     static bool     f_stream;                                // first audio data received
     static bool     f_firstPacket;
     static bool     f_chunkFinished;
+    static uint32_t byteCounter;    // count received data
     static uint8_t  ts_packet[188]; // m3u8 transport stream is 188 bytes long
     uint8_t         ts_packetStart = 0;
     uint8_t         ts_packetLength = 0;
@@ -3431,6 +3436,7 @@ void Audio::processWebStreamTS() {
         f_stream = false;
         f_firstPacket = true;
         f_chunkFinished = false;
+        byteCounter = 0;
         chunkSize = 0;
         m_t0 = millis();
         ts_packetPtr = 0;
@@ -3452,7 +3458,7 @@ void Audio::processWebStreamTS() {
         int res = _client->read(ts_packet + ts_packetPtr, ts_packetsize - ts_packetPtr);
         if(res > 0) {
             ts_packetPtr += res;
-            m_byteCounter += res;
+            byteCounter += res;
             if(ts_packetPtr < ts_packetsize) return;
             ts_packetPtr = 0;
             if(f_firstPacket) { // search for ID3 Header in the first packet
@@ -3484,11 +3490,11 @@ void Audio::processWebStreamTS() {
                     InBuff.bytesWritten(ts_packetLength - ws);
                 }
             }
-            if (m_byteCounter == m_contentlength || m_byteCounter == chunkSize) {
+            if (byteCounter == m_contentlength || byteCounter == chunkSize) {
                 f_chunkFinished = true;
-                m_byteCounter = 0;
+                byteCounter = 0;
             }
-            if(m_byteCounter > m_contentlength) log_e("m_byteCounter overflow");
+            if(byteCounter > m_contentlength) log_e("byteCounter overflow");
         }
     }
     if(f_chunkFinished) {
@@ -3533,6 +3539,7 @@ void Audio::processWebStreamHLS() {
     static bool     f_stream;       // first audio data received
     static bool     firstBytes;
     static bool     f_chunkFinished;
+    static uint32_t byteCounter; // count received data
     static size_t   chunkSize = 0;
     static uint16_t ID3WritePtr;
     static uint16_t ID3ReadPtr;
@@ -3542,6 +3549,7 @@ void Audio::processWebStreamHLS() {
     if(m_f_firstCall) { // runs only ont time per connection, prepare for start
         f_stream = false;
         f_chunkFinished = false;
+        byteCounter = 0;
         chunkSize = 0;
         ID3WritePtr = 0;
         ID3ReadPtr = 0;
@@ -3560,7 +3568,7 @@ void Audio::processWebStreamHLS() {
 
         if(m_f_chunked && !chunkSize) {
             chunkSize = chunkedDataTransfer(&readedBytes);
-            m_byteCounter += readedBytes;
+            byteCounter += readedBytes;
         }
 
         if(firstBytes) {
@@ -3592,7 +3600,7 @@ void Audio::processWebStreamHLS() {
                 InBuff.bytesWritten(ID3BuffSize - (ID3ReadPtr + ws));
             }
             if(ID3Buff) free(ID3Buff);
-            m_byteCounter += ID3BuffSize;
+            byteCounter += ID3BuffSize;
             ID3Buff = NULL;
             firstBytes = false;
         }
@@ -3605,11 +3613,11 @@ void Audio::processWebStreamHLS() {
         else { bytesWasWritten = _client->read(InBuff.getWritePtr(), InBuff.writeSpace()); }
         InBuff.bytesWritten(bytesWasWritten);
 
-        m_byteCounter += bytesWasWritten;
+        byteCounter += bytesWasWritten;
 
-        if(m_byteCounter == m_contentlength || m_byteCounter == chunkSize) {
+        if(byteCounter == m_contentlength || byteCounter == chunkSize) {
             f_chunkFinished = true;
-            m_byteCounter = 0;
+            byteCounter = 0;
         }
     }
 
@@ -4751,7 +4759,7 @@ uint32_t Audio::getFilePos() {
 #ifdef AUDIO_NO_SD_FS
   return 0;
 #else					 
-    if(!audiofile) return m_byteCounter;
+    if(!audiofile) return 0;
     return audiofile.position();
 #endif
 }
@@ -5542,6 +5550,11 @@ bool Audio::ts_parsePacket(uint8_t* packet, uint8_t* packetStart, uint8_t* packe
                 *packetLength = TS_PACKET_SIZE - posOfPacketStart - startOfData;
                 PES_DataLength -= (*packetLength);
                 PES_DataLength -= (PES_HeaderDataLength + 3);
+                return true;
+            }
+            if(firstByte == 0 && secondByte == 0 && thirdByte == 0){
+                // PES packet startcode prefix is 0x000000
+                // skip such packets
                 return true;
             }
         }

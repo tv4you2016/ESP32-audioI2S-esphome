@@ -4,7 +4,7 @@
  * adapted to ESP32
  *
  * Created on: Jul 03,2020
- * Updated on: Feb 19,2024
+ * Updated on: Apr 12,2024
  *
  * Author: Wolle
  *
@@ -25,12 +25,14 @@ uint32_t         s_flacBlockPicLenUntilFrameEnd = 0;
 uint32_t         s_flacCurrentFilePos = 0;
 uint32_t         s_flacBlockPicPos = 0;
 uint32_t         s_flacBlockPicLen = 0;
+uint32_t         s_flacAudioDataStart = 0;
 int32_t          s_flacRemainBlockPicLen = 0;
 const uint16_t   s_flacOutBuffSize = 2048;
 uint16_t         s_blockSize = 0;
 uint16_t         s_blockSizeLeft = 0;
 uint16_t         s_flacValidSamples = 0;
 uint16_t         s_rIndex = 0;
+uint16_t         s_offset = 0;
 uint8_t          s_flacStatus = 0;
 uint8_t*         s_flacInptr;
 float            s_flacCompressionRatio = 0;
@@ -45,7 +47,7 @@ bool             s_f_oggWrapper = false;
 bool             s_f_lastMetaDataBlock = false;
 bool             s_f_flacNewMetadataBlockPicture = false;
 uint8_t          s_flacPageNr = 0;
-int32_t**        s_samplesBuffer;
+int32_t**        s_samplesBuffer = NULL;
 uint16_t         s_maxBlocksize = MAX_BLOCKSIZE;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -114,9 +116,15 @@ void FLACDecoder_FreeBuffers(){
     if(s_flacStreamTitle)  {free(s_flacStreamTitle);  s_flacStreamTitle  = NULL;}
     if(s_flacVendorString) {free(s_flacVendorString); s_flacVendorString = NULL;}
 
-    for (int i = 0; i < MAX_CHANNELS; i++)
-        if(!s_samplesBuffer[i]){free(s_samplesBuffer[i]); s_samplesBuffer[i] = NULL;}
-    if(s_samplesBuffer){free(s_samplesBuffer); s_samplesBuffer = NULL;}
+    if(s_samplesBuffer){
+        for (int i = 0; i < MAX_CHANNELS; i++){
+            if(s_samplesBuffer[i]){free(s_samplesBuffer[i]);}
+        }
+        free(s_samplesBuffer); s_samplesBuffer = NULL;
+    }
+    coefs.clear(); coefs.shrink_to_fit();
+    s_flacSegmTableVec.clear(); s_flacSegmTableVec.shrink_to_fit();
+    s_flacBlockPicItem.clear(); s_flacBlockPicItem.shrink_to_fit();
 }
 //----------------------------------------------------------------------------------------------------------------------
 void FLACDecoder_setDefaults(){
@@ -130,11 +138,13 @@ void FLACDecoder_setDefaults(){
     s_flacBlockPicPos = 0;
     s_flacBlockPicLen = 0;
     s_flacRemainBlockPicLen = 0;
+    s_flacAudioDataStart = 0;
     s_blockSize = 0;
+    s_offset = 0;
     s_blockSizeLeft = 0;
     s_flacValidSamples = 0;
     s_rIndex = 0;
-    s_flacStatus = 0;
+    s_flacStatus = DECODE_FRAME;
     s_flacCompressionRatio = 0;
     s_flacBitBufferLen = 0;
     s_flac_pageSegments = 0;
@@ -200,9 +210,8 @@ void FLACSetRawBlockParams(uint8_t Chans, uint32_t SampRate, uint8_t BPS, uint32
 }
 //----------------------------------------------------------------------------------------------------------------------
 void FLACDecoderReset(){ // set var to default
-    s_flacStatus = DECODE_FRAME;
-    s_flac_bitBuffer = 0;
-    s_flacBitBufferLen = 0;
+    FLACDecoder_setDefaults();
+    FLACDecoder_ClearBuffer();
 }
 //----------------------------------------------------------------------------------------------------------------------
 int FLACFindSyncWord(unsigned char *buf, int nBytes) {
@@ -603,6 +612,9 @@ int8_t FLACDecode(uint8_t *inbuf, int *bytesLeft, short *outbuf){ //  MAIN LOOP
 
         if(nBytes > 0){
             int16_t diff = nBytes;
+            if(s_flacAudioDataStart == 0){
+                s_flacAudioDataStart = s_flacCurrentFilePos;
+            }
             ret = FLACDecodeNative(inbuf, &nBytes, outbuf);
             diff -= nBytes;
             s_flacCurrentFilePos += diff;
@@ -687,7 +699,7 @@ int8_t FLACDecode(uint8_t *inbuf, int *bytesLeft, short *outbuf){ //  MAIN LOOP
 //----------------------------------------------------------------------------------------------------------------------
 int8_t FLACDecodeNative(uint8_t *inbuf, int *bytesLeft, short *outbuf){
 
-     int bl = *bytesLeft;
+    int bl = *bytesLeft;
     static int sbl = 0;
 
     if(s_flacStatus != OUT_SAMPLES){
@@ -699,42 +711,45 @@ int8_t FLACDecodeNative(uint8_t *inbuf, int *bytesLeft, short *outbuf){
         int ret = flacDecodeFrame (inbuf, bytesLeft);
         if(ret != 0) return ret;
         if(*bytesLeft < MAX_BLOCKSIZE) return FLAC_DECODE_FRAMES_LOOP; // need more data
+        sbl += bl - *bytesLeft;
     }
 
     if(s_flacStatus == DECODE_SUBFRAMES){
 
         // Decode each channel's subframe, then skip footer
         int ret = decodeSubframes(bytesLeft);
-        sbl = bl - *bytesLeft;
         if(ret != 0) return ret;
         s_flacStatus = OUT_SAMPLES;
+        sbl += bl - *bytesLeft;
     }
 
     if(s_flacStatus == OUT_SAMPLES){  // Write the decoded samples
         // blocksize can be much greater than outbuff, so we can't stuff all in once
         // therefore we need often more than one loop (split outputblock into pieces)
         uint16_t blockSize;
-        static uint16_t offset = 0;
-        if(s_blockSize < s_flacOutBuffSize + offset) blockSize = s_blockSize - offset;
+        if(s_blockSize < s_flacOutBuffSize + s_offset) blockSize = s_blockSize - s_offset;
         else blockSize = s_flacOutBuffSize;
 
         for (int i = 0; i < blockSize; i++) {
             for (int j = 0; j < FLACMetadataBlock->numChannels; j++) {
-                int val = s_samplesBuffer[j][i + offset];
+                int val = s_samplesBuffer[j][i + s_offset];
                 if (FLACMetadataBlock->bitsPerSample == 8) val += 128;
                 outbuf[2*i+j] = val;
             }
         }
 
         s_flacValidSamples = blockSize * FLACMetadataBlock->numChannels;
-        offset += blockSize;
-        s_flacCompressionRatio = (float)sbl / (s_flacValidSamples * FLACMetadataBlock->numChannels);
-        s_flacBitrate = FLACMetadataBlock->sampleRate * FLACMetadataBlock->bitsPerSample * FLACMetadataBlock->numChannels;
-        s_flacBitrate /= s_flacCompressionRatio;
-
-        if(offset != s_blockSize) return GIVE_NEXT_LOOP;
-        if(offset > s_blockSize) { log_e("offset has a wrong value"); }
-        offset = 0;
+        s_offset += blockSize;
+        if(sbl > 0){
+            s_flacCompressionRatio = (float)((s_flacValidSamples * 2) * FLACMetadataBlock->numChannels) / sbl; // valid samples are 16 bit
+            sbl = 0;
+            s_flacBitrate = FLACMetadataBlock->sampleRate * FLACMetadataBlock->bitsPerSample * FLACMetadataBlock->numChannels;
+            s_flacBitrate /= s_flacCompressionRatio;
+      //      log_e("s_flacBitrate %i, s_flacCompressionRatio %f, FLACMetadataBlock->sampleRate %i ", s_flacBitrate, s_flacCompressionRatio, FLACMetadataBlock->sampleRate);
+        }
+        if(s_offset != s_blockSize) return GIVE_NEXT_LOOP;
+        if(s_offset > s_blockSize) { log_e("offset has a wrong value"); }
+        s_offset = 0;
     }
 
     alignToByte();
@@ -830,18 +845,22 @@ uint16_t FLACGetOutputSamps(){
 }
 //----------------------------------------------------------------------------------------------------------------------
 uint64_t FLACGetTotoalSamplesInStream(){
+    if(!FLACMetadataBlock) return 0;
     return FLACMetadataBlock->totalSamples;
 }
 //----------------------------------------------------------------------------------------------------------------------
 uint8_t FLACGetBitsPerSample(){
+    if(!FLACMetadataBlock) return 0;
     return FLACMetadataBlock->bitsPerSample;
 }
 //----------------------------------------------------------------------------------------------------------------------
 uint8_t FLACGetChannels(){
+    if(!FLACMetadataBlock) return 0;
     return FLACMetadataBlock->numChannels;
 }
 //----------------------------------------------------------------------------------------------------------------------
 uint32_t FLACGetSampRate(){
+    if(!FLACMetadataBlock) return 0;
     return FLACMetadataBlock->sampleRate;
 }
 //----------------------------------------------------------------------------------------------------------------------
@@ -849,8 +868,12 @@ uint32_t FLACGetBitRate(){
     return s_flacBitrate;
 }
 //----------------------------------------------------------------------------------------------------------------------
+uint32_t FLACGetAudioDataStart(){
+    return s_flacAudioDataStart;
+}
+//----------------------------------------------------------------------------------------------------------------------
 uint32_t FLACGetAudioFileDuration() {
-    if(FLACGetSampRate()){
+    if(FLACGetSampRate()){ // DIV0
         uint32_t afd = FLACGetTotoalSamplesInStream()/ FLACGetSampRate(); // AudioFileDuration
         return afd;
     }

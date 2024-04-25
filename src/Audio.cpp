@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.8q
- *  Updated on: Mar 04.2024
+ *  Version 3.0.9i
+ *  Updated on: Apr 22.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -147,7 +147,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     if(m_f_psramFound) m_chbufSize = 4096; else m_chbufSize = 512 + 64;
     if(m_f_psramFound) m_ibuffSize = 4096; else m_ibuffSize = 512 + 64;
     m_lastHost = (char*)__malloc_heap_psram(512);
-    m_outBuff = (int16_t*)__malloc_heap_psram(2048 * 2 * sizeof(int16_t));
+    m_outBuff = (int16_t*)__malloc_heap_psram(m_outbuffSize);
     m_chbuf = (char*)__malloc_heap_psram(m_chbufSize);
     m_ibuff = (char*)__malloc_heap_psram(m_ibuffSize);
 
@@ -193,6 +193,7 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     m_i2s_std_cfg.clk_cfg.mclk_multiple  = I2S_MCLK_MULTIPLE_128;      // mclk = sample_rate * 256
     i2s_channel_init_std_mode(m_i2s_tx_handle, &m_i2s_std_cfg);
     I2Sstart(0);
+    m_sampleRate = 44100;
 #else
     m_i2s_config.sample_rate          = 16000;
     m_i2s_config.bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT;
@@ -328,8 +329,9 @@ void Audio::setDefaults() {
     m_f_ssl = false;
     m_f_metadata = false;
     m_f_tts = false;
-    m_f_firstCall = true;     // InitSequence for processWebstream and processLokalFile
-    m_f_firstM3U8call = true; // InitSequence for parsePlaylist_M3U8
+    m_f_firstCall = true;        // InitSequence for processWebstream and processLocalFile
+    m_f_firstCurTimeCall = true; // InitSequence for computeAudioTime
+    m_f_firstM3U8call = true;    // InitSequence for parsePlaylist_M3U8
     m_f_running = false;
     m_f_loop = false;     // Set if audio file should loop
     m_f_unsync = false;   // set within ID3 tag but not used
@@ -360,8 +362,9 @@ void Audio::setDefaults() {
     m_controlCounter = 0; // Status within readID3data() and readWaveHeader()
     m_channels = 2;       // assume stereo #209
     m_streamTitleHash = 0;
-    m_file_size = 0;
+    m_fileSize = 0;
     m_ID3Size = 0;
+    m_haveNewFilePos = 0;
 }
 
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -807,88 +810,49 @@ void Audio::UTF8toASCII(char* str) {
 #ifndef AUDIO_NO_SD_FS
 // clang-format on
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
+bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t fileStartPos) {
 
     if(!path) { // guard
-        AUDIO_INFO("The given path is empty");
+        printProcessLog(AUDIOLOG_PATH_IS_NULL);
         return false;
     }
 
     xSemaphoreTakeRecursive(mutex_audio, portMAX_DELAY); // #3
 
-    m_resumeFilePos = resumeFilePos;
+    m_fileStartPos = fileStartPos;
     setDefaults(); // free buffers an set defaults
 
-    { // open audiofile scope
-        const char *audioName = nullptr; // pointer for the final file path
-        char *audioNameAlternative = nullptr; // possible buffer for alternative versions of the audioName
+    char *audioPath = (char *) __malloc_heap_psram(strlen(path) + 2);
+    if(!audioPath){
+        printProcessLog(AUDIOLOG_OUT_OF_MEMORY);
+        xSemaphoreGiveRecursive(mutex_audio);
+        return false;
+    }
+    if(path[0] == '/'){strcpy(audioPath, path);}
+    else {audioPath[0] = '/'; strcpy(audioPath + 1, path);}
 
-        if (fs.exists(path)) { // use given path if it exists (issue #86)
-            audioName = path;
-        }
-        else { // try alternative path variants
-            size_t len = strlen(path);
-            size_t copyMemSize = len + 2; // 2 extra bytes for possible leading / and \0 terminator
-            size_t copyOffset = 0;
-
-            audioNameAlternative = (char *) __malloc_heap_psram(copyMemSize);
-            if (!audioNameAlternative) {
-                log_e("out of memory");
-                xSemaphoreGiveRecursive(mutex_audio);
-                return false;
-            }
-
-            // make sure the path starts with a /
-            if (path[0] != '/') {
-                audioNameAlternative[0] = '/';
-                copyOffset = 1;
-            }
-
-            // copy original path to audioNameAlternative buffer
-            strncpy(audioNameAlternative + copyOffset, path, copyMemSize - copyOffset);
-
-            if (fs.exists(audioNameAlternative)) { // use path with extra leading / if it exists
-                audioName = audioNameAlternative;
-            }
-            else { // use ASCII version of the path if it exists
-                UTF8toASCII(audioNameAlternative);
-                if (fs.exists(audioNameAlternative)) {
-                    audioName = audioNameAlternative;
-                }
-            }
-        }
-
-        if (!audioName) {
-            AUDIO_INFO("File doesn't exist: \"%s\"", path);
+    if(!fs.exists(audioPath)) {
+        UTF8toASCII(audioPath);
+        if(!fs.exists(audioPath)){
+            printProcessLog(AUDIOLOG_FILE_NOT_FOUND, audioPath);
             xSemaphoreGiveRecursive(mutex_audio);
-            if (audioNameAlternative) {
-                free(audioNameAlternative);
-            }
+            free(audioPath);
             return false;
-        }
-
-        AUDIO_INFO("Reading file: \"%s\"", audioName);
-        vTaskDelay(2);
-
-        audiofile = fs.open(audioName);
-
-        // free audioNameAlternative if used
-        if (audioNameAlternative) {
-            free(audioNameAlternative);
         }
     }
 
+    AUDIO_INFO("Reading file: \"%s\"", audioPath);
+    audiofile = fs.open(audioPath);
+
     if(!audiofile) {
-        if(audio_info) {
-            vTaskDelay(2);
-            audio_info("Failed to open file for reading");
-        }
+        printProcessLog(AUDIOLOG_FILE_READ_ERR, audioPath);
+        free(audioPath);
         xSemaphoreGiveRecursive(mutex_audio);
         return false;
     }
 
     setDatamode(AUDIO_LOCALFILE);
-    m_file_size = audiofile.size(); // TEST loop
+    m_fileSize = audiofile.size(); // TEST loop
 
     char* afn = NULL; // audioFileName
     afn = strdup(audiofile.name());
@@ -911,6 +875,7 @@ bool Audio::connecttoFS(fs::FS& fs, const char* path, int32_t resumeFilePos) {
         free(afn);
         afn = NULL;
     }
+    free(audioPath);
 
     bool ret = initializeDecoder();
     if(ret) m_f_running = true;
@@ -1506,10 +1471,11 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
         m_controlCounter = FLAC_OKAY;
         m_audioDataStart = headerSize;
         m_audioDataSize = m_contentlength - m_audioDataStart;
+        FLACSetRawBlockParams(m_flacNumChannels, m_flacSampleRate, m_flacBitsPerSample, m_flacTotalSamplesInStream, m_audioDataSize);
         if(picLen) {
 #ifndef AUDIO_NO_SD_FS
             size_t pos = audiofile.position();
-            audio_id3image(audiofile, picPos, picLen);
+            if(audio_id3image) audio_id3image(audiofile, picPos, picLen);
             audiofile.seek(pos); // the filepointer could have been changed by the user, set it back
 #endif
 
@@ -1586,27 +1552,34 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
     }
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_controlCounter == FLAC_VORBIS) { /* VORBIS COMMENT */ // field names
-        const char fn[7][12] = {"TITLE", "VERSION", "ALBUM", "TRACKNUMBER", "ARTIST", "COMMENT", "GENRE"};
-        int        offset;
-        size_t     l = bigEndian(data, 3);
+        size_t vendorLength = bigEndian(data, 3);
+        size_t idx = 0;
+        data += 3; idx += 3;
+        size_t vendorStringLength = data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
+        if(vendorStringLength) {data += 4; idx += 4;}
+        if(vendorStringLength > 495) vendorStringLength = 495; // guard
+        strcpy(m_chbuf, "VENDOR_STRING: ");
+        strncpy(m_chbuf + 15, (const char*)data, vendorStringLength);
+        m_chbuf[15 + vendorStringLength] = '\0';
+        if(audio_id3data) audio_id3data(m_chbuf);
+        data += vendorStringLength; idx += vendorStringLength;
+        size_t commentListLength = data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
+        data += 4; idx += 4;
 
-        for(int i = 0; i < 7; i++) {
-            offset = specialIndexOf(data, fn[i], len);
-            if(offset >= 0) {
-                uint32_t s =  data[offset - 4];
-                         s += data[offset - 3] << 8;
-                         s += data[offset - 2] << 16;
-                         s += data[offset - 1] << 24;
-                if(s > 512) s = 512; // guard
-                strcpy(m_chbuf, fn[i]);
-                strcat(m_chbuf, ": ");
-                int p = strlen(m_chbuf);
-                strncat(m_chbuf, (const char*)(data + offset + p - 1), s - p + 1);
+        for(int i = 0; i < commentListLength; i++) {
+            (void)i;
+            size_t commentLength = data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
+            data += 4; idx += 4;
+            if(commentLength < 512) { // guard
+                strncpy(m_chbuf, (const char *)data , commentLength);
+                m_chbuf[commentLength] = '\0';
                 if(audio_id3data) audio_id3data(m_chbuf);
             }
+            data += commentLength; idx += commentLength;
+            if(idx > vendorLength + 3) {log_e("VORBIS COMMENT section is too long");}
         }
         m_controlCounter = FLAC_MBH;
-        retvalue = l + 3;
+        retvalue = vendorLength + 3;
         headerSize += retvalue;
         return 0;
     }
@@ -2289,22 +2262,21 @@ uint32_t Audio::stopSong() {
 #ifndef AUDIO_NO_SD_FS	
             m_streamType = ST_NONE;
             pos = getFilePos() - inBufferFilled();
-            audiofile.close();
-            AUDIO_INFO("Closing audio file");
 #endif  // AUDIO_NO_SD_FS
         }
     }
 #ifndef AUDIO_NO_SD_FS
     if(audiofile) {
         // added this before putting 'm_f_localfile = false' in stopSong(); shoulf never occur....
+        AUDIO_INFO("Closing audio file \"%s\"", audiofile.name());
         audiofile.close();
-        AUDIO_INFO("Closing audio file");
-        log_w("Closing audio file"); // for debug
     }
 #endif  // AUDIO_NO_SD_FS
-    memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t)); // Clear OutputBuffer
+    memset(m_outBuff, 0, m_outbuffSize); // Clear OutputBuffer
     memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
     m_validSamples = 0;
+    m_audioCurrentTime = 0;
+    m_audioFileDuration = 0;
     return pos;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2315,7 +2287,7 @@ bool Audio::pauseResume() {
         m_f_running = !m_f_running;
         retVal = true;
         if(!m_f_running) {
-            memset(m_outBuff, 0, 2048 * 2 * sizeof(uint16_t)); // Clear OutputBuffer
+            memset(m_outBuff, 0, m_outbuffSize); // Clear OutputBuffer
             m_validSamples = 0;
         }
     }
@@ -2742,6 +2714,7 @@ const char* Audio::parsePlaylist_M3U8() {
                 f_EXTINF_found = true;
                 if(STfromEXTINF(m_playlistContent[i])) { showstreamtitle(m_chbuf); }
                 i++;
+                if(startsWith(m_playlistContent[i], "#")) i++;   // #MY-USER-CHUNK-DATA-1:ON-TEXT-DATA="20....
                 if(i == lines) continue; // and exit for()
 
                 char* tmp = nullptr;
@@ -2922,6 +2895,23 @@ const char* Audio::m3u8redirection() {
     }
     else { tmp = strdup(m_playlistContent[choosenLine]); }
 
+    if(startsWith(m_playlistContent[choosenLine], "../")){
+        // ../../2093120-b/RISMI/stream01/streamPlaylist.m3u8
+        if(tmp) { free(tmp); tmp = NULL;}
+        tmp = (char*)malloc(strlen(m_lastHost) + strlen(m_playlistContent[choosenLine]));
+        strcpy(tmp, m_lastHost);
+        int idx1 = lastIndexOf(tmp, "/");
+        tmp[idx1] = '\0';
+
+        while(startsWith(m_playlistContent[choosenLine], "../")){
+            memcpy(m_playlistContent[choosenLine], m_playlistContent[choosenLine] + 3, strlen(m_playlistContent[choosenLine] +3) + 1); // shift << 3
+            idx1 = lastIndexOf(tmp, "/");
+            tmp[idx1] = '\0';
+        }
+        strcat(tmp, "/");
+        strcat(tmp, m_playlistContent[choosenLine]);
+    }
+
     if(m_playlistContent[choosenLine]) {
         free(m_playlistContent[choosenLine]);
         m_playlistContent[choosenLine] = NULL;
@@ -2936,7 +2926,7 @@ const char* Audio::m3u8redirection() {
         free(tmp);
         tmp = NULL;
     }
-    if(m_f_Log) log_i("redirect to %s", m_playlistContent[choosenLine]);
+    log_d("redirect to %s", m_playlistContent[choosenLine]);
     _client->stop();
     return m_playlistContent[choosenLine]; // it's a redirection, a new m3u8 playlist
 exit:
@@ -3109,40 +3099,51 @@ void Audio::processLocalFile() {
             return;
         }
         else {
-            if((InBuff.freeSpace() > maxFrameSize) && (m_file_size - byteCounter) > maxFrameSize && availableBytes) {
+            if((InBuff.freeSpace() > maxFrameSize) && (m_fileSize - byteCounter) > maxFrameSize && availableBytes) {
                 // fill the buffer before playing
                 return;
             }
 
             f_stream = true;
-            AUDIO_INFO("stream ready_1");
+            AUDIO_INFO("stream ready");
             if(m_f_Log) log_i("m_audioDataStart %d", m_audioDataStart);
         }
     }
+
+    if(m_fileStartPos > 0){
+        setFilePos(m_fileStartPos);
+        m_fileStartPos = -1;
+    }
+
     if(m_resumeFilePos >= 0) {
-        if(m_resumeFilePos < m_audioDataStart) m_resumeFilePos = m_audioDataStart;
-        if(m_resumeFilePos > m_file_size) m_resumeFilePos = m_file_size;
-        if(m_codec == CODEC_M4A) m_resumeFilePos = m4a_correctResumeFilePos(m_resumeFilePos);
+        if(m_resumeFilePos <  (int32_t)m_audioDataStart) m_resumeFilePos = m_audioDataStart;
+        if(m_resumeFilePos >= (int32_t)m_audioDataStart + m_audioDataSize) {goto exit;}
+        m_haveNewFilePos = m_resumeFilePos;
+
+        if(m_codec == CODEC_M4A) {
+            m_resumeFilePos = m4a_correctResumeFilePos(m_resumeFilePos);
+        }
         if(m_codec == CODEC_WAV) {
-            while((m_resumeFilePos % 4) != 0) m_resumeFilePos++;
-        } // must be divisible by four
+            while((m_resumeFilePos % 4) != 0){ // must be divisible by four
+                m_resumeFilePos++;
+                if(m_resumeFilePos >= m_fileSize) goto exit;
+            }
+        }
         if(m_codec == CODEC_FLAC) {
             m_resumeFilePos = flac_correctResumeFilePos(m_resumeFilePos);
+            if(m_resumeFilePos == -1) goto exit;
             FLACDecoderReset();
         }
-        if(m_codec == CODEC_MP3) { m_resumeFilePos = mp3_correctResumeFilePos(m_resumeFilePos); }
-        if(m_avr_bitrate) m_audioCurrentTime = ((double)(m_resumeFilePos - m_audioDataStart) / m_avr_bitrate) * 8;
+        if(m_codec == CODEC_MP3) {
+            m_resumeFilePos = mp3_correctResumeFilePos(m_resumeFilePos);
+            if(m_resumeFilePos == -1) goto exit;
+        }
+
         audiofile.seek(m_resumeFilePos);
         InBuff.resetBuffer();
         byteCounter = m_resumeFilePos;
         f_fileDataComplete = false; // #570
 
-        if(m_f_Log) {
-            log_i("m_resumeFilePos %i", m_resumeFilePos);
-            log_i("m_audioDataStart %d", m_audioDataStart);
-            log_i("m_audioCurrentTime %f", (double)m_audioCurrentTime);
-            log_i("m_file_size %d", m_file_size);
-        }
         m_resumeFilePos = -1;
         f_stream = false;
     }
@@ -3176,12 +3177,13 @@ void Audio::processLocalFile() {
             f_fileDataComplete = false;
             return;
         } // loop
-
-        char* afn = strdup(audiofile.name()); // store temporary the name
+exit:
+        char* afn = NULL;
+        if(audiofile) afn = strdup(audiofile.name()); // store temporary the name
         m_f_running = false;
         m_streamType = ST_NONE;
         audiofile.close();
-        AUDIO_INFO("Closing audio file");
+        AUDIO_INFO("Closing audio file \"%s\"", afn);
 
         if(m_codec == CODEC_MP3) MP3Decoder_FreeBuffers();
         if(m_codec == CODEC_AAC) AACDecoder_FreeBuffers();
@@ -3189,12 +3191,17 @@ void Audio::processLocalFile() {
         if(m_codec == CODEC_FLAC) FLACDecoder_FreeBuffers();
         if(m_codec == CODEC_OPUS) OPUSDecoder_FreeBuffers();
         if(m_codec == CODEC_VORBIS) VORBISDecoder_FreeBuffers();
-        AUDIO_INFO("End of file \"%s\"", afn);
-        if(audio_eof_mp3) audio_eof_mp3(afn);
+
         if(afn) {
+            if(audio_eof_mp3) audio_eof_mp3(afn);
+            AUDIO_INFO("End of file \"%s\"", afn);
             free(afn);
             afn = NULL;
         }
+        m_audioCurrentTime = 0;
+        m_audioFileDuration = 0;
+        m_resumeFilePos = -1;
+        m_haveNewFilePos = 0;
         return;
     }
     if(byteCounter == audiofile.size()) { f_fileDataComplete = true; }
@@ -3286,7 +3293,7 @@ void Audio::processWebFile() {
     const uint32_t  maxFrameSize = InBuff.getMaxBlockSize(); // every mp3/aac frame is not bigger
     static bool     f_stream;                                // first audio data received
     static bool     f_webFileDataComplete;                   // all file data received
-    static uint32_t byteCounter; 
+    static uint32_t byteCounter;
     static uint32_t chunkSize;                               // chunkcount read from stream
     static size_t   audioDataCount;                          // counts the decoded audiodata only
 
@@ -4318,7 +4325,10 @@ int Audio::findNextSync(uint8_t* data, size_t len) {
         m_f_playing = true;
         nextSync = 0;
     }
-    if(m_codec == CODEC_MP3) { nextSync = MP3FindSyncWord(data, len); }
+    if(m_codec == CODEC_MP3) {
+        nextSync = MP3FindSyncWord(data, len);
+        if(nextSync == -1) return len; // syncword not found, search next block
+    }
     if(m_codec == CODEC_AAC) { nextSync = AACFindSyncWord(data, len); }
     if(m_codec == CODEC_M4A) {
         AACSetRawBlockParams(0, 2, 44100, 1);
@@ -4328,7 +4338,6 @@ int Audio::findNextSync(uint8_t* data, size_t len) {
     if(m_codec == CODEC_FLAC) {
         nextSync = FLACFindSyncWord(data, len);
         if(nextSync == -1) return len; // OggS not found, search next block
-        //FLACSetRawBlockParams(m_flacNumChannels, m_flacSampleRate, m_flacBitsPerSample, m_flacTotalSamplesInStream, m_audioDataSize);
     }
     if(m_codec == CODEC_OPUS) {
         nextSync = OPUSFindSyncWord(data, len);
@@ -4376,18 +4385,30 @@ void Audio::setDecoderItems() {
         setSampleRate(FLACGetSampRate());
         setBitsPerSample(FLACGetBitsPerSample());
         setBitrate(FLACGetBitRate());
+        if(FLACGetAudioDataStart() > 0){ // only flac-ogg, native flac sets audioDataStart in readFlacHeader()
+            m_audioDataStart = FLACGetAudioDataStart();
+            if(getFileSize()) m_audioDataSize = getFileSize() - m_audioDataStart;
+        }
     }
     if(m_codec == CODEC_OPUS) {
         setChannels(OPUSGetChannels());
         setSampleRate(OPUSGetSampRate());
         setBitsPerSample(OPUSGetBitsPerSample());
         setBitrate(OPUSGetBitRate());
+        if(OPUSGetAudioDataStart() > 0){
+            m_audioDataStart = OPUSGetAudioDataStart();
+            if(getFileSize()) m_audioDataSize = getFileSize() - m_audioDataStart;
+        }
     }
     if(m_codec == CODEC_VORBIS) {
         setChannels(VORBISGetChannels());
         setSampleRate(VORBISGetSampRate());
         setBitsPerSample(VORBISGetBitsPerSample());
         setBitrate(VORBISGetBitRate());
+        if(VORBISGetAudioDataStart() > 0){
+            m_audioDataStart = VORBISGetAudioDataStart();
+            if(getFileSize()) m_audioDataSize = getFileSize() - m_audioDataStart;
+        }
     }
     if(getBitsPerSample() != 8 && getBitsPerSample() != 16) {
         AUDIO_INFO("Bits per sample must be 8 or 16, found %i", getBitsPerSample());
@@ -4408,6 +4429,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     if(!m_f_playing) {
         f_setDecodeParamsOnce = true;
         nextSync = findNextSync(data, len);
+        if(nextSync == -1) return len;
         if(nextSync == 0) { m_f_playing = true; }
         return nextSync;
     }
@@ -4436,25 +4458,21 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     //                 < 0: there has been an error
 
     if(m_decodeError < 0) { // Error, skip the frame...
-                            //        i2s_zero_dma_buffer((i2s_port_t)m_i2s_num);
-        if(!getChannels() && m_codec == CODEC_MP3 && (m_decodeError == -2)) {
-            ; // at the beginning this doesn't have to be a mistake, suppress errorcode MAINDATA_UNDERFLOW
+
+        printDecodeError(m_decodeError);
+        m_f_playing = false; // seek for new syncword
+        if(m_codec == CODEC_FLAC) {
+        //    if(m_decodeError == ERR_FLAC_BITS_PER_SAMPLE_TOO_BIG) stopSong();
+        //    if(m_decodeError == ERR_FLAC_RESERVED_CHANNEL_ASSIGNMENT) stopSong();
         }
-        else {
-            printDecodeError(m_decodeError);
-            m_f_playing = false; // seek for new syncword
-            if(m_codec == CODEC_FLAC) {
-                if(m_decodeError == ERR_FLAC_BITS_PER_SAMPLE_TOO_BIG) stopSong();
-                if(m_decodeError == ERR_FLAC_RESERVED_CHANNEL_ASSIGNMENT) stopSong();
-            }
-            if(m_codec == CODEC_OPUS) {
-                if(m_decodeError == ERR_OPUS_HYBRID_MODE_UNSUPPORTED) stopSong();
-                if(m_decodeError == ERR_OPUS_SILK_MODE_UNSUPPORTED) stopSong();
-                if(m_decodeError == ERR_OPUS_NARROW_BAND_UNSUPPORTED) stopSong();
-                if(m_decodeError == ERR_OPUS_WIDE_BAND_UNSUPPORTED) stopSong();
-                if(m_decodeError == ERR_OPUS_SUPER_WIDE_BAND_UNSUPPORTED) stopSong();
-            }
+        if(m_codec == CODEC_OPUS) {
+            if(m_decodeError == ERR_OPUS_HYBRID_MODE_UNSUPPORTED) stopSong();
+            if(m_decodeError == ERR_OPUS_SILK_MODE_UNSUPPORTED) stopSong();
+            if(m_decodeError == ERR_OPUS_NARROW_BAND_UNSUPPORTED) stopSong();
+            if(m_decodeError == ERR_OPUS_WIDE_BAND_UNSUPPORTED) stopSong();
+            if(m_decodeError == ERR_OPUS_SUPER_WIDE_BAND_UNSUPPORTED) stopSong();
         }
+
         return 1; // skip one byte and seek for the next sync word
     }
     bytesDecoded = len - bytesLeft;
@@ -4493,7 +4511,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
                                 // log_i("---------------------------------------------------------------------------");
                                 #ifndef AUDIO_NO_SD_FS
-                                    if(audio_oggimage) audio_oggimage(audiofile, vec);
+                                if(audio_oggimage) audio_oggimage(audiofile, vec);
                                 #endif
                             }
                             break;
@@ -4511,7 +4529,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
                                 // log_i("---------------------------------------------------------------------------");
                                 #ifndef AUDIO_NO_SD_FS
-                                    if(audio_oggimage) audio_oggimage(audiofile, vec);
+                                if(audio_oggimage) audio_oggimage(audiofile, vec);
                                 #endif
                             }
                             break;
@@ -4529,7 +4547,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // for(int i = 0; i < vec.size(); i += 2) { log_i("segment %02i, pos %07i, len %05i", i / 2, vec[i], vec[i + 1]); }
                                 // log_i("---------------------------------------------------------------------------");
                                 #ifndef AUDIO_NO_SD_FS
-                                    if(audio_oggimage) audio_oggimage(audiofile, vec);
+                                if(audio_oggimage) audio_oggimage(audiofile, vec);
                                 #endif
                             }
                             break;
@@ -4540,7 +4558,10 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
         m_PlayingStartTime = millis();
     }
 
-    compute_audioCurrentTime(bytesDecoded);
+    uint16_t bytesDecoderOut = m_validSamples;
+    if(m_channels == 2) bytesDecoderOut /= 2;
+    if(m_bitsPerSample == 16) bytesDecoderOut *= 2;
+    computeAudioTime(bytesDecoded, bytesDecoderOut);
 
     if(audio_process_extern) {
         bool continueI2S = false;
@@ -4552,51 +4573,96 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     return bytesDecoded;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-void Audio::compute_audioCurrentTime(int bd) {
-    static uint16_t loop_counter = 0;
-    static int      old_bitrate = 0;
-    static uint64_t sum_bitrate = 0;
-    static boolean  f_CBR = true; // constant bitrate
-    static uint8_t  cnt = 0;
+void Audio::computeAudioTime(uint16_t bytesDecoderIn, uint16_t bytesDecoderOut) {
 
-    if(m_codec == CODEC_MP3) { setBitrate(MP3GetBitrate()); }   // if not CBR, bitrate can be changed
-    if(m_codec == CODEC_M4A) { setBitrate(AACGetBitrate()); }   // if not CBR, bitrate can be changed
-    if(m_codec == CODEC_AAC) { setBitrate(AACGetBitrate()); }   // if not CBR, bitrate can be changed
-    if(m_codec == CODEC_FLAC) { setBitrate(FLACGetBitRate()); } // if not CBR, bitrate can be changed
+    if(getDatamode() != AUDIO_LOCALFILE && m_streamType != ST_WEBFILE) return; //guard
 
-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    if(m_avr_bitrate == 0) { // first time
-        loop_counter = 1;
-        old_bitrate = 0;
-        sum_bitrate = 0;
-        f_CBR = true;
-        m_avr_bitrate = getBitRate();
-        old_bitrate = getBitRate();
-        cnt = 0;
-    }
-    if(!getBitRate()) return;
-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    static uint64_t sumBytesIn         = 0;
+    static uint64_t sumBytesOut        = 0;
+    static uint32_t sumBitRate         = 0;
+    static uint32_t counter            = 0;
+    static uint32_t timeStamp          = 0;
+    static uint32_t deltaBytesIn       = 0;
+    static uint32_t nominalBitRate     = 0;
 
-    if((old_bitrate != getBitRate()) && f_CBR) {
-        if(audio_info) audio_info("VBR recognized, audioFileDuration is estimated");
-        f_CBR = false; // variable bitrate
-    }
-    old_bitrate = getBitRate();
+    if(m_f_firstCurTimeCall) { // first call
+        m_f_firstCurTimeCall = false;
+        sumBytesIn = 0;
+        sumBytesOut = 0;
+        sumBitRate  = 0;
+        counter = 0;
+        timeStamp = millis();
+        deltaBytesIn = 0;
+        nominalBitRate = 0;
 
-    if(loop_counter < 10000) { // then the bit rate is determined with sufficient precision
-        sum_bitrate += getBitRate();
-        m_avr_bitrate = sum_bitrate / loop_counter;
-        loop_counter++;
+        if(m_codec == CODEC_FLAC && FLACGetAudioFileDuration()){
+            m_audioFileDuration = FLACGetAudioFileDuration();
+            nominalBitRate = (m_audioDataSize / FLACGetAudioFileDuration()) * 8;
+            m_avr_bitrate = nominalBitRate;
+        }
+        if(m_codec == CODEC_WAV){
+            nominalBitRate = getBitRate();
+            m_avr_bitrate = nominalBitRate;
+            m_audioFileDuration = m_audioDataSize  / (getSampleRate() * getChannels());
+            if(getBitsPerSample() == 16) m_audioFileDuration /= 2;
+        }
     }
 
-    m_audioCurrentTime += ((float)bd / m_avr_bitrate) * 8;
+    sumBytesIn   += bytesDecoderIn;
+    deltaBytesIn += bytesDecoderIn;
+    sumBytesOut  += bytesDecoderOut;
 
-    if(cnt == 1) {
-        m_audioCurrentTime = ((float)(getFilePos() - m_audioDataStart - inBufferFilled()) / m_avr_bitrate) * 8; // #293
+
+    if(timeStamp + 500 < millis()){
+        uint32_t t       = millis();      // time tracking
+        uint32_t delta_t = t - timeStamp; //    ---"---
+        timeStamp = t;                    //    ---"---
+
+        uint32_t bitRate = ((deltaBytesIn * 8000) / delta_t);  // we know the time and bytesIn to compute the bitrate
+
+        sumBitRate += bitRate;
+        counter ++;
+        if(nominalBitRate){
+            m_audioCurrentTime = round(((float)sumBytesIn * 8) / m_avr_bitrate);
+        }
+        else{
+            m_avr_bitrate = sumBitRate / counter;
+            m_audioCurrentTime = (sumBytesIn * 8) / m_avr_bitrate;
+            m_audioFileDuration = round(((float)m_audioDataSize * 8 / m_avr_bitrate));
+        }
+        deltaBytesIn = 0;
     }
-    cnt++;
-    if(cnt == 100) cnt = 0;
+
+    if(m_haveNewFilePos && m_avr_bitrate){
+        uint32_t posWhithinAudioBlock =  m_haveNewFilePos - m_audioDataStart;
+        uint32_t newTime = posWhithinAudioBlock / (m_avr_bitrate / 8);
+        m_audioCurrentTime = newTime;
+        sumBytesIn = posWhithinAudioBlock;
+        m_haveNewFilePos = 0;
+    }
 }
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ void Audio::printProcessLog(int r, const char* s){
+    const char* e;
+    const char* f = "";
+    uint8_t logLevel;  // 1 Error, 2 Warn, 3 Info,
+    switch(r) {
+        case AUDIOLOG_PATH_IS_NULL: e = "The path ore file name is empty"; logLevel = 1; break;
+        case AUDIOLOG_OUT_OF_MEMORY: e = "Out of memory"; logLevel = 1; break;
+        case AUDIOLOG_FILE_NOT_FOUND: e = "File doesn't exist: "; logLevel = 1; f = s; break;
+        case AUDIOLOG_FILE_READ_ERR: e = "Failed to open file for reading"; logLevel = 1; break;
+
+        default: e = "UNKNOWN EVENT"; logLevel = 3; break;
+    }
+    if(audio_log){
+        audio_log(logLevel, e, f);
+    }
+    else {
+        if     (logLevel == 1) {AUDIO_INFO("ERROR: %s%s", e, f);}
+        else if(logLevel == 2) {AUDIO_INFO("WARNING: %s%s", e, f);}
+        else                   {AUDIO_INFO("INFO: %s%s", e, f);}
+    }
+ }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 void Audio::printDecodeError(int r) {
     const char* e;
@@ -4740,16 +4806,13 @@ bool Audio::setPinout(uint8_t BCLK, uint8_t LRC, uint8_t DOUT, int8_t MCLK) {
     return (result == ESP_OK);
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-uint32_t Audio::getFileSize() {
+uint32_t Audio::getFileSize() { // returns the size of webfile or local file
 #ifdef AUDIO_NO_SD_FS
   return 0;
 #else					 		 
-        if(!audiofile) {
-        if (m_contentlength > 0) {
-            return m_contentlength;
-        } else {
-            return 0;
-        }
+    if(!audiofile) {
+        if (m_contentlength > 0) { return m_contentlength;}
+        return 0;
     }
     return audiofile.size();
 #endif						 
@@ -4768,33 +4831,27 @@ uint32_t Audio::getAudioDataStartPos() {
 #ifdef AUDIO_NO_SD_FS
   return 0;
 #else
-  if(!audiofile) return 0;
-  return m_audioDataStart;
+    if(!audiofile) return 0;
+    return m_audioDataStart;
 #endif  // AUDIO_NO_SD_FS
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint32_t Audio::getAudioFileDuration() {
 #ifndef AUDIO_NO_SD_FS
     if(getDatamode() == AUDIO_LOCALFILE) {
-        if(!audiofile) return 0;
+        if(!m_audioDataSize) return 0;
     }
 #endif
     if(m_streamType == ST_WEBFILE) {
         if(!m_contentlength) return 0;
     }
 
-    if(m_avr_bitrate && m_codec == CODEC_MP3) m_audioFileDuration = 8 * ((float)m_audioDataSize / m_avr_bitrate); // #289
-    else if(m_avr_bitrate && m_codec == CODEC_WAV) m_audioFileDuration = 8 * ((float)m_audioDataSize / m_avr_bitrate);
-    else if(m_avr_bitrate && m_codec == CODEC_M4A) m_audioFileDuration = 8 * ((float)m_audioDataSize / m_avr_bitrate);
-    else if(m_avr_bitrate && m_codec == CODEC_AAC) m_audioFileDuration = 8 * ((float)m_audioDataSize / m_avr_bitrate);
-    else if(m_codec == CODEC_FLAC) m_audioFileDuration = FLACGetAudioFileDuration();
-    else return 0;
+    if(!m_avr_bitrate) return 0;
     return m_audioFileDuration;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint32_t Audio::getAudioCurrentTime() { // return current time in seconds
-    return (uint32_t)m_audioCurrentTime;
-}
+    return round(m_audioCurrentTime);}
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setAudioPlayPosition(uint16_t sec) {
     if(m_codec == CODEC_OPUS) return false;   // not impl. yet
@@ -4819,43 +4876,39 @@ uint32_t Audio::getTotalPlayingTime() {
     return millis() - m_PlayingStartTime;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-bool Audio::setTimeOffset(int sec) {
+bool Audio::setTimeOffset(int sec) { // fast forward or rewind the current position in seconds
+
+    if(!audiofile || !m_avr_bitrate) return false;
     if(m_codec == CODEC_OPUS) return false;   // not impl. yet
     if(m_codec == CODEC_VORBIS) return false; // not impl. yet
-    // fast forward or rewind the current position in seconds
-    // audiosource must be a mp3, aac or wav file
 #ifndef AUDIO_NO_SD_FS
-    if(!audiofile || !m_avr_bitrate) return false;
-
     uint32_t oneSec = m_avr_bitrate / 8;                 // bytes decoded in one sec
     int32_t  offset = oneSec * sec;                      // bytes to be wind/rewind
     uint32_t startAB = m_audioDataStart;                 // audioblock begin
     uint32_t endAB = m_audioDataStart + m_audioDataSize; // audioblock end
 
-    if(m_codec == CODEC_MP3 || m_codec == CODEC_AAC || m_codec == CODEC_WAV || m_codec == CODEC_FLAC) {
-        int32_t pos = getFilePos() - inBufferFilled();
-        pos += offset;
-        if(pos < (int32_t)startAB) pos = startAB;
-        if(pos >= (int32_t)endAB) pos = endAB;
-        setFilePos(pos);
-        return true;
-    }
+    int32_t pos = getFilePos() - inBufferFilled();
+    pos += offset;
+    if(pos < (int32_t)startAB) {pos = startAB;}
+    if(pos >= (int32_t)endAB)  {pos = endAB;}
+    setFilePos(pos);
 #endif  // AUDIO_NO_SD_FS 
     return false;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setFilePos(uint32_t pos) {
-    if(m_codec == CODEC_OPUS) return false;   // not impl. yet
-    if(m_codec == CODEC_VORBIS) return false; // not impl. yet
 #ifdef AUDIO_NO_SD_FS
   return false;
-#else
+#else	
+
     if(!audiofile) return false;
-    if(pos < m_audioDataStart) pos = m_audioDataStart; // issue #96
-    if(pos > m_file_size) pos = m_file_size;
-    m_resumeFilePos = pos;
-    memset(m_outBuff, 0, 2048 * 2 * sizeof(int16_t));
+    if(m_codec == CODEC_OPUS) return false;   // not impl. yet
+    if(m_codec == CODEC_VORBIS) return false; // not impl. yet
+    memset(m_outBuff, 0, m_outbuffSize);
     m_validSamples = 0;
+    m_resumeFilePos = pos;  // used in processLocalFile()
+    m_haveNewFilePos = pos; // used in computeAudioCurrentTime()
+
     return true;
 #endif  // AUDIO_NO_SD_FS
 }
@@ -4879,19 +4932,22 @@ bool Audio::audioFileSeek(const float speed) {
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setSampleRate(uint32_t sampRate) {
-    if(!sampRate) sampRate = 16000; // fuse, if there is no value -> set default #209
+    if(!sampRate) sampRate = 44100; // fuse, if there is no value -> set default #209
+    if(m_sampleRate == sampRate) return true;
     m_sampleRate = sampRate;
 #if ESP_IDF_VERSION_MAJOR == 5
-    m_i2s_std_cfg.clk_cfg.sample_rate_hz = sampRate;
     I2Sstop(0);
+    m_i2s_std_cfg.clk_cfg.sample_rate_hz = sampRate;
     i2s_channel_reconfig_std_clock(m_i2s_tx_handle, &m_i2s_std_cfg.clk_cfg);
     I2Sstart(0);
 #else
     i2s_set_sample_rates((i2s_port_t)m_i2s_num, sampRate);
 #endif
+    memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
     IIR_calculateCoefficients(m_gain0, m_gain1, m_gain2); // must be recalculated after each samplerate change
     return true;
 }
+//------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint32_t Audio::getSampleRate() { return m_sampleRate; }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setBitsPerSample(int bits) {
@@ -6081,17 +6137,51 @@ uint32_t Audio::m4a_correctResumeFilePos(uint32_t resumeFilePos) {
     return pos;
 }
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-uint32_t Audio::flac_correctResumeFilePos(uint32_t resumeFilePos) {
-    // The starting point is the next FLAC syncword
-    uint8_t  p1, p2;
+uint32_t Audio::ogg_correctResumeFilePos(uint32_t resumeFilePos) {
+    // The starting point is the next OggS magic word
+  log_w("in_resumeFilePos %i", resumeFilePos);
+
+    uint8_t  p1, p2, p3, p4;
     boolean  found = false;
     uint32_t pos = resumeFilePos;
     audiofile.seek(pos);
 
     p1 = audiofile.read();
     p2 = audiofile.read();
+    p3 = audiofile.read();
+    p4 = audiofile.read();
+
+    pos += 4;
+    while(!found || pos >= m_fileSize) {
+        if(p1 == 'O' && p2 == 'g'&& p3 == 'g' && p4 == 'S') {
+            found = true;
+            break;
+        }
+        p1 = p2;
+        p2 = p3;
+        p3 = p4;
+        p4 = audiofile.read();
+        pos++;
+    }
+    if(found) { log_w("out_resumeFilePos %i", pos - 4);    return (pos - 4);}
+    stopSong();
+    return 0;
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+int32_t Audio::flac_correctResumeFilePos(uint32_t resumeFilePos) {
+    // The starting point is the next FLAC syncword
+    uint8_t  p1, p2;
+    boolean  found = false;
+    uint32_t pos = resumeFilePos;
+    uint32_t maxPos = m_audioDataStart + m_audioDataSize;
+
+    if(pos + 2 >= maxPos) goto exit;
+
+    audiofile.seek(pos);
+    p1 = audiofile.read();
+    p2 = audiofile.read();
     pos += 2;
-    while(!found || pos == m_file_size) {
+    while(!found && pos < maxPos) {
         if(p1 == 0xFF && p2 == 0xF8) {
             found = true;
             break;
@@ -6100,33 +6190,67 @@ uint32_t Audio::flac_correctResumeFilePos(uint32_t resumeFilePos) {
         p2 = audiofile.read();
         pos++;
     }
-
     if(found) return (pos - 2);
-    return m_audioDataStart;
+
+exit:
+    return -1;
 }
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-uint32_t Audio::mp3_correctResumeFilePos(uint32_t resumeFilePos) {
-    // The starting point is the next MP3 syncword
-    uint8_t  p1, p2;
+int32_t Audio::mp3_correctResumeFilePos(uint32_t resumeFilePos) {
+/* this checks that the first 22 bits of the next frame header are the same as the current frame header, but it's still not foolproof
+ * (could accidentally find a sequence in the bitstream which appears to match but is not actually the next frame header)
+ * this could be made more error-resilient by checking several frames in a row and verifying that nSlots is the same in each case
+*/
     boolean  found = false;
     uint32_t pos = resumeFilePos;
+    uint32_t pos1 = 0, pos2 = 0;
+    uint32_t maxPos = m_audioDataStart + m_audioDataSize;
+    uint8_t byte1a, byte2a, byte3a;
+    uint8_t byte1b, byte2b, byte3b;
+
+    if(pos + 3 >= maxPos) goto exit;
+    if(pos < m_audioDataStart) pos = m_audioDataStart;
     audiofile.seek(pos);
 
-    p1 = audiofile.read();
-    p2 = audiofile.read();
-    pos += 2;
-    while(!found || pos == m_file_size) {
-        if(p1 == 0xFF && (p2 & 0xF0) == 0xF0) {
-            found = true;
-            break;
+    while(!found){
+        if(pos + 3 >= maxPos) goto exit;
+        byte1a = audiofile.read(); pos++;
+        byte2a = audiofile.read(); pos++;
+        while(true){
+            if(byte1a == 0xFF && (byte2a & 0x0E0) == 0xE0) {
+                byte3a = audiofile.read(); pos++;
+                pos1 = pos - 3; break;
+            }
+            byte1a = byte2a;
+            byte2a = audiofile.read(); pos++;
+            if(pos >= maxPos) goto exit;
         }
-        p1 = p2;
-        p2 = audiofile.read();
-        pos++;
+        // log_i("pos1 %i, byte1a %X, byte2a %X, byte3a %X", pos1, byte1a, byte2a, byte3a);
+
+        if(pos + 3 >= maxPos) goto exit;
+        byte1b = audiofile.read(); pos++;
+        byte2b = audiofile.read(); pos++;
+        while(true){
+            if(byte1b == 0xFF && (byte2b & 0x0E0) == 0xE0) {
+                byte3b = audiofile.read(); pos++;
+                pos2 = pos - 3; break;
+            }
+            byte1b = byte2b;
+            byte2b = audiofile.read(); pos++;
+            if(pos >= maxPos) goto exit;
+        }
+
+        if((byte1a == byte1b) && (byte2a ==  byte2b) && ((byte3a & 0xFC) == (byte3b & 0xFC))){
+            if(byte1a == 0xFF && byte2a == 0xFF && byte3a == 0xFF) found = false; // 0xFFFFFF can't be
+            else found = true;
+        }
     }
-    MP3Decoder_ClearBuffer();
-    if(found) return (pos - 2);
-    return m_audioDataStart;
+    (void) pos2;
+    // log_i("found pos1=%i, pos2=%i", pos1, pos2);
+    if(found) return (pos1);
+
+exit:
+    return -1;
 }
 #endif  // AUDIO_NO_SD_FS
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

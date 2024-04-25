@@ -4,7 +4,7 @@
 //#pragma GCC diagnostic ignored "-Wnarrowing"
 
 #include <stdint.h>
-#include <memory.h>
+#include <string.h>
 #include <vector>
 using namespace std;
 
@@ -48,6 +48,7 @@ uint32_t         OPUSGetSampRate();
 uint8_t          OPUSGetBitsPerSample();
 uint32_t         OPUSGetBitRate();
 uint16_t         OPUSGetOutputSamps();
+uint32_t         OPUSGetAudioDataStart();
 char*            OPUSgetStreamTitle();
 vector<uint32_t> OPUSgetMetadataBlockPicture();
 int              OPUSFindSyncWord(unsigned char* buf, int nBytes);

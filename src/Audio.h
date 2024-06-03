@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.9h
- *  Updated on: Apr 22.2024
+ *  Version 3.0.10e
+ *  Updated on: May 29.2024
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -31,6 +31,7 @@
   #define I2S_GPIO_UNUSED -1 // = I2S_PIN_NO_CHANGE in IDF < 5
 #endif
 using namespace std;
+#define MULTISAMPLE 16 // set number of frames to send in multi-frame-mode
 
 extern __attribute__((weak)) void audio_info(const char*);
 extern __attribute__((weak)) void audio_id3data(const char*); //ID3 metadata
@@ -190,7 +191,7 @@ private:
   enum : int8_t { AUDIOLOG_PATH_IS_NULL = -1, AUDIOLOG_FILE_NOT_FOUND = -2, AUDIOLOG_OUT_OF_MEMORY = -3, AUDIOLOG_FILE_READ_ERR = -4, AUDIOLOG_ERR_UNKNOWN = -127 };
 
   void            UTF8toASCII(char* str);
-  bool            latinToUTF8(char* buff, size_t bufflen);
+  bool            latinToUTF8(char* buff, size_t bufflen, bool UTF8check = true);
   void            setDefaults(); // free buffers and set defaults
   void            initInBuff();
   bool            httpPrint(const char* host);
@@ -205,7 +206,7 @@ private:
   const char*     parsePlaylist_PLS();
   const char*     parsePlaylist_ASX();
   const char*     parsePlaylist_M3U8();
-  const char*     m3u8redirection();
+  const char*     m3u8redirection(uint8_t* codec);
   uint64_t        m3u8_findMediaSeqInURL();
   bool            STfromEXTINF(char* str);
   void            showCodecParams();
@@ -226,6 +227,8 @@ private:
   bool            setBitsPerSample(int bits);
   bool            setChannels(int channels);
   bool            setBitrate(int br);
+  bool            playPreparedSamples();
+  bool            play16Sample(int16_t sample16[MULTISAMPLE*2]);
   void            playChunk();
   bool            playSample(int16_t sample[2]);
   void            computeVUlevel(int16_t sample[2]);
@@ -492,6 +495,9 @@ private:
 
     static const uint8_t m_tsPacketSize  = 188;
     static const uint8_t m_tsHeaderSize  = 4;
+
+    uint32_t* 		m_samplebuffer = NULL;          // for multiframe i2s-send
+	uint32_t 		m_sample = 0;                   // shbgr debug
 
     char*           m_ibuff = nullptr;              // used in audio_info()
     char*           m_chbuf = NULL;

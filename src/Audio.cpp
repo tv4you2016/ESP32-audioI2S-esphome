@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 26.2018
  *
- *  Version 3.0.12f
- *  Updated on: Jul 29.2024
+ *  Version 3.0.12h
+ *  Updated on: Aug 09.2024
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -210,8 +210,8 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
 #if ESP_IDF_VERSION_MAJOR == 5
     m_i2s_chan_cfg.id            = (i2s_port_t)m_i2s_num;  // I2S_NUM_AUTO, I2S_NUM_0, I2S_NUM_1
     m_i2s_chan_cfg.role          = I2S_ROLE_MASTER;        // I2S controller master role, bclk and lrc signal will be set to output
-    m_i2s_chan_cfg.dma_desc_num  = 16;                     // number of DMA buffer
-    m_i2s_chan_cfg.dma_frame_num = 512;                // I2S frame number in one DMA buffer.
+    m_i2s_chan_cfg.dma_desc_num  = 32;                     // number of DMA buffer
+    m_i2s_chan_cfg.dma_frame_num = 256;                    // I2S frame number in one DMA buffer.
     m_i2s_chan_cfg.auto_clear    = true;                   // i2s will always send zero automatically if no data to send
     i2s_new_channel(&m_i2s_chan_cfg, &m_i2s_tx_handle, NULL);
 
@@ -225,10 +225,10 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     m_i2s_std_cfg.gpio_cfg.invert_flags.bclk_inv = false;
     m_i2s_std_cfg.gpio_cfg.invert_flags.ws_inv   = false;
     m_i2s_std_cfg.clk_cfg.sample_rate_hz = 44100;
-    m_i2s_std_cfg.clk_cfg.clk_src        = I2S_CLK_SRC_DEFAULT;        // Select PLL_F160M as the default source clock
-    m_i2s_std_cfg.clk_cfg.mclk_multiple  = I2S_MCLK_MULTIPLE_128;      // mclk = sample_rate * 256
+    m_i2s_std_cfg.clk_cfg.clk_src        = I2S_CLK_SRC_PLL_160M;        // Select PLL_F160M as the default source clock
+    m_i2s_std_cfg.clk_cfg.mclk_multiple  = I2S_MCLK_MULTIPLE_512;      // mclk = sample_rate * 256
     i2s_channel_init_std_mode(m_i2s_tx_handle, &m_i2s_std_cfg);
-    I2Sstart(0);
+    I2Sstart(m_i2s_num);
     m_sampleRate = 44100;
 
     if (internalDAC)  {
@@ -290,6 +290,7 @@ Audio::~Audio() {
         m_playlistBuff = NULL;
     }
 #if ESP_IDF_VERSION_MAJOR == 5
+    i2s_channel_disable(m_i2s_tx_handle);
     i2s_del_channel(m_i2s_tx_handle);
 #else
     i2s_driver_uninstall((i2s_port_t)m_i2s_num); // #215 free I2S buffer
@@ -413,6 +414,9 @@ void Audio::setDefaults() {
     m_ID3Size = 0;
     m_haveNewFilePos = 0;
     m_validSamples = 0;
+    m_M4A_chConfig = 0;
+    m_M4A_objectType = 0;
+    m_M4A_sampleRate = 0;
 }
 
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2162,6 +2166,7 @@ int Audio::read_M4A_Header(uint8_t* data, size_t len) {
             else if(objectType == 5) { AUDIO_INFO("AudioObjectType: AAC Spectral Band Replication"); }
             else if(objectType == 6) { AUDIO_INFO("AudioObjectType: AAC Scalable"); }
             else { AUDIO_INFO("unknown ObjectType %x, stop", objectType); stopSong();}
+            if(objectType < 7) m_M4A_objectType = objectType;
 
             const uint32_t samplingFrequencies[13] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
             uint8_t        sRate = (ASC & 0x0600) >> 7; // next 4 bits Sampling Frequencies
@@ -2172,6 +2177,7 @@ int Audio::read_M4A_Header(uint8_t* data, size_t len) {
             if(chConfig == 1) AUDIO_INFO("Channel Configurations: front-center");
             if(chConfig == 2) AUDIO_INFO("Channel Configurations: front-left, front-right");
             if(chConfig > 2) { log_e("Channel Configurations with more than 2 channels is not allowed, stop!"); stopSong();}
+            if(chConfig < 3) m_M4A_chConfig = chConfig;
 
             uint8_t frameLengthFlag = (ASC & 0x04);
             uint8_t dependsOnCoreCoder = (ASC & 0x02);
@@ -2189,7 +2195,9 @@ int Audio::read_M4A_Header(uint8_t* data, size_t len) {
             int srate = bigEndian(data + offset + 26, 4);   //
             setBitsPerSample(bps);
             setChannels(channel);
+            if(!m_M4A_chConfig) m_M4A_chConfig = channel;
             setSampleRate(srate);
+            m_M4A_sampleRate = srate;
             setBitrate(bps * channel * srate);
             AUDIO_INFO("ch; %i, bps: %i, sr: %i", channel, bps, srate);
             if(audioDataPos && getDatamode() == AUDIO_LOCALFILE) {
@@ -2463,6 +2471,20 @@ void Audio::playChunk() {
     m_validSamples -= i2s_bytesConsumed / (sampleSize * m_channels);
     if(m_validSamples < 0) { m_validSamples = 0; }
     count += i2s_bytesConsumed / sampleSize;
+
+
+// ---- statistics, bytes written to I2S (every 10s)
+    // static int cnt = 0;
+    // static uint32_t t = millis();
+
+    // if(t + 10000 < millis()){
+    //     log_w("%i", cnt);
+    //     cnt = 0;
+    //     t = millis();
+    // }
+    // cnt+= i2s_bytesConsumed;
+//-------------------------------------------
+
 
     return;
 exit:
@@ -3182,7 +3204,7 @@ void Audio::processLocalFile() {
     if(!(audiofile && m_f_running && getDatamode() == AUDIO_LOCALFILE)) return; // guard
 
     static uint32_t ctime = 0;
-    const uint32_t  timeout = 2500;                          // ms
+    const uint32_t  timeout = 6500;                          // ms
     const uint32_t  maxFrameSize = InBuff.getMaxBlockSize(); // every mp3/aac frame is not bigger
     static bool     f_fileDataComplete;
     static uint32_t byteCounter; // count received data
@@ -4409,18 +4431,14 @@ void Audio::showCodecParams() {
 
     if(m_codec == CODEC_AAC) {
         uint8_t answ = AACGetFormat();
-        if(answ < 4) {
-            const char hf[4][8] = {"unknown", "ADTS", "ADIF", "RAW"};
+        if(answ < 3) {
+            const char hf[4][8] = {"unknown", "ADIF", "ADTS"};
             AUDIO_INFO("AAC HeaderFormat: %s", hf[answ])
         }
-        if(answ == 1) { // ADTS Header
-            uint8_t aacId = AACGetID();
-            uint8_t aacPr = AACGetProfile();
-            if(aacId < 2 && aacPr < 4) {
-                const char co[2][7] = {"MPEG-4", "MPEG-2"};
-                const char pr[4][23] = {"Main", "LowComplexity", "Scalable Sampling Rate", "reserved"};
-                AUDIO_INFO("AAC Codec: %s %s", co[aacId], pr[answ]);
-            }
+        answ = AACGetSBR();
+        if(answ > 0 && answ < 4) {
+            const char sbr[4][50] = {"without SBR", "upsampled SBR", "downsampled SBR", "no SBR used, but file is upsampled by a factor 2"};
+            AUDIO_INFO("Spectral band replication: %s", sbr[answ]);
         }
     }
 }
@@ -4445,7 +4463,10 @@ int Audio::findNextSync(uint8_t* data, size_t len) {
     }
     if(m_codec == CODEC_AAC) { nextSync = AACFindSyncWord(data, len); }
     if(m_codec == CODEC_M4A) {
-        AACSetRawBlockParams(0, 2, 44100, 1);
+        if(!m_M4A_chConfig)m_M4A_chConfig = 2; // guard
+        if(!m_M4A_sampleRate)m_M4A_sampleRate = 44100;
+        if(!m_M4A_objectType)m_M4A_objectType = 2;
+        AACSetRawBlockParams(m_M4A_chConfig, m_M4A_sampleRate, m_M4A_objectType);
         m_f_playing = true;
         nextSync = 0;
     }
@@ -4611,6 +4632,12 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
         case CODEC_MP3:     m_validSamples = MP3GetOutputSamps() / getChannels();
                             break;
         case CODEC_AAC:     m_validSamples = AACGetOutputSamps() / getChannels();
+                            static uint8_t isPS = 0;
+                            if(!isPS && AACGetParametricStereo()){ // only change 0 -> 1
+                                isPS = 1;
+                                AUDIO_INFO("Parametric Stereo");
+                            }
+                            else isPS = AACGetParametricStereo();
                             break;
         case CODEC_M4A:     m_validSamples = AACGetOutputSamps() / getChannels();
                             break;
@@ -4798,33 +4825,8 @@ void Audio::printDecodeError(int r) {
         }
         AUDIO_INFO("MP3 decode error %d : %s", r, e);
     }
-    if(m_codec == CODEC_AAC) {
-        switch(r) {
-            case ERR_AAC_NONE: e = "NONE"; break;
-            case ERR_AAC_INDATA_UNDERFLOW: e = "INDATA_UNDERFLOW"; break;
-            case ERR_AAC_NULL_POINTER: e = "NULL_POINTER"; break;
-            case ERR_AAC_INVALID_ADTS_HEADER: e = "INVALID_ADTS_HEADER"; break;
-            case ERR_AAC_INVALID_ADIF_HEADER: e = "INVALID_ADIF_HEADER"; break;
-            case ERR_AAC_INVALID_FRAME: e = "INVALID_FRAME"; break;
-            case ERR_AAC_MPEG4_UNSUPPORTED: e = "MPEG4_UNSUPPORTED"; break;
-            case ERR_AAC_CHANNEL_MAP: e = "CHANNEL_MAP"; break;
-            case ERR_AAC_SYNTAX_ELEMENT: e = "SYNTAX_ELEMENT"; break;
-            case ERR_AAC_DEQUANT: e = "DEQUANT"; break;
-            case ERR_AAC_STEREO_PROCESS: e = "STEREO_PROCESS"; break;
-            case ERR_AAC_PNS: e = "PNS"; break;
-            case ERR_AAC_SHORT_BLOCK_DEINT: e = "SHORT_BLOCK_DEINT"; break;
-            case ERR_AAC_TNS: e = "TNS"; break;
-            case ERR_AAC_IMDCT: e = "IMDCT"; break;
-            case ERR_AAC_SBR_INIT: e = "SBR_INIT"; break;
-            case ERR_AAC_SBR_BITSTREAM: e = "SBR_BITSTREAM"; break;
-            case ERR_AAC_SBR_DATA: e = "SBR_DATA"; break;
-            case ERR_AAC_SBR_PCM_FORMAT: e = "SBR_PCM_FORMAT"; break;
-            case ERR_AAC_SBR_NCHANS_TOO_HIGH: e = "SBR_NCHANS_TOO_HIGH"; break;
-            case ERR_AAC_SBR_SINGLERATE_UNSUPPORTED: e = "BR_SINGLERATE_UNSUPPORTED"; break;
-            case ERR_AAC_NCHANS_TOO_HIGH: e = "NCHANS_TOO_HIGH"; break;
-            case ERR_AAC_RAWBLOCK_PARAMS: e = "RAWBLOCK_PARAMS"; break;
-            default: e = "ERR_UNKNOWN";
-        }
+    if(m_codec == CODEC_AAC || m_codec == CODEC_M4A) {
+        e = AACGetErrorMessage(abs(r));
         AUDIO_INFO("AAC decode error %d : %s", r, e);
     }
     if(m_codec == CODEC_FLAC) {
@@ -4913,9 +4915,9 @@ bool Audio::setPinout(uint8_t BCLK, uint8_t LRC, uint8_t DOUT, int8_t MCLK) {
     gpio_cfg.dout = (gpio_num_t)DOUT;
     gpio_cfg.mclk = (gpio_num_t)MCLK;
     gpio_cfg.ws = (gpio_num_t)LRC;
-    I2Sstop(0);
+    I2Sstop(m_i2s_num);
     result = i2s_channel_reconfig_std_gpio(m_i2s_tx_handle, &gpio_cfg);
-    I2Sstart(0);
+    I2Sstart(m_i2s_num);
 #else
     m_pin_config.bck_io_num = BCLK;
     m_pin_config.ws_io_num = LRC; //  wclk = lrc
@@ -5043,10 +5045,10 @@ bool Audio::audioFileSeek(const float speed) {
 
     uint32_t srate = getSampleRate() * speed;
 #if ESP_IDF_VERSION_MAJOR == 5
-    I2Sstop(0);
+    I2Sstop(m_i2s_num);
     m_i2s_std_cfg.clk_cfg.sample_rate_hz = srate;
     i2s_channel_reconfig_std_clock(m_i2s_tx_handle, &m_i2s_std_cfg.clk_cfg);
-    I2Sstart(0);
+    I2Sstart(m_i2s_num);
 #else
     i2s_set_sample_rates((i2s_port_t)m_i2s_num, srate);
 #endif
@@ -5091,7 +5093,7 @@ void Audio::reconfigI2S(){
 
     i2s_channel_reconfig_std_clock(m_i2s_tx_handle, &m_i2s_std_cfg.clk_cfg);
     i2s_channel_reconfig_std_slot(m_i2s_tx_handle, &m_i2s_std_cfg.slot_cfg);
-    I2Sstart(0);
+    I2Sstart(m_i2s_num);
 #else
     m_i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     i2s_set_clk((i2s_port_t)m_i2s_num, m_sampleRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
@@ -6374,6 +6376,16 @@ uint8_t Audio::determineOggCodec(uint8_t* data, uint16_t len) {
 // separate task for decoding and outputting the data. 'playAudioData()' is started periodically and fetches the data from the InBuffer. This ensures
 // that the I2S-DMA is always sufficiently filled, even if the Arduino 'loop' is stuck.
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+void Audio::setAudioTaskCore(uint8_t coreID){  // Recommendation:If the ARDUINO RUNNING CORE is 1, the audio task should be core 0 or vice versa
+    if(coreID > 1) return;
+    stopAudioTask();
+    xSemaphoreTake(mutex_playAudioData, portMAX_DELAY);
+    m_audioTaskCoreId = coreID;
+    xSemaphoreGive(mutex_playAudioData);
+    startAudioTask();
+}
+
 void Audio::startAudioTask() {
     if (m_f_audioTaskIsRunning) {
         log_i("Task is already running.");
@@ -6381,14 +6393,16 @@ void Audio::startAudioTask() {
     }
     m_f_audioTaskIsRunning = true;
 
+    // xTaskCreate(&Audio::taskWrapper, "PeriodicTask", 3300, this, 4, &m_audioTaskHandle);
+
     xTaskCreatePinnedToCore(
         &Audio::taskWrapper,    /* Function to implement the task */
         "PeriodicTask",         /* Name of the task */
         3300,                   /* Stack size in words */
         this,                   /* Task input parameter */
-        4,                      /* Priority of the task */
+        2,                      /* Priority of the task */
         &m_audioTaskHandle,     /* Task handle. */
-        0                       /* Core where the task should run */
+        m_audioTaskCoreId       /* Core where the task should run */
     );
 }
 
@@ -6411,7 +6425,7 @@ void Audio::taskWrapper(void *param) {
 
 void Audio::audioTask() {
     while (m_f_audioTaskIsRunning) {
-        vTaskDelay(3 / portTICK_PERIOD_MS);  // periodically every 7 ms
+        vTaskDelay(1 / portTICK_PERIOD_MS);  // periodically every x ms
         performAudioTask();
     }
     vTaskDelete(nullptr);  // Delete this task

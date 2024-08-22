@@ -3,7 +3,7 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.12f
+ *  Version 3.0.12h
  *  Updated on: Jul 29.2024
  *      Author: Wolle (schreibfaul1)
  */
@@ -248,6 +248,9 @@ private:
   bool            ts_parsePacket(uint8_t* packet, uint8_t* packetStart, uint8_t* packetLength);
 
   //+++ create a T A S K  for playAudioData(), output via I2S +++
+public:
+  void            setAudioTaskCore(uint8_t coreID);
+private:
   void            startAudioTask(); // starts a task for decode and play
   void            stopAudioTask();  // stops task for audio
   static void     taskWrapper(void *param);
@@ -535,6 +538,10 @@ private:
     uint8_t         m_ID3Size = 0;                  // lengt of ID3frame - ID3header
     uint8_t         m_vuLeft = 0;                   // average value of samples, left channel
     uint8_t         m_vuRight = 0;                  // average value of samples, right channel
+    uint8_t         m_audioTaskCoreId = 0;
+    uint8_t         m_M4A_objectType = 0;           // set in read_M4A_Header
+    uint8_t         m_M4A_chConfig = 0;             // set in read_M4A_Header
+    uint16_t        m_M4A_sampleRate = 0;           // set in read_M4A_Header
     int16_t*        m_outBuff = NULL;               // Interleaved L/R
     int16_t         m_validSamples = {0};           // #144
     int16_t         m_curSample{0};

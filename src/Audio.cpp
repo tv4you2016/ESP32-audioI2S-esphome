@@ -1741,7 +1741,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
 
         if(startsWith(tag, "APIC")) { // a image embedded in file, passing it to external function
             isUnicode = false;
-            if(getDatamdde() == AUDIO_LOCALFILE) {
+            if(m_dataMode == AUDIO_LOCALFILE) {
 #ifndef AUDIO_NO_SD_FS	
                 APIC_pos[numID3Header] = totalId3Size + id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = framesize;
@@ -2280,11 +2280,13 @@ uint32_t Audio::stopSong() {
             }
             if(_client->connected()) _client->stop();
         }
+#ifndef AUDIO_NO_SD_FS
         if(audiofile) {
             // added this before putting 'm_f_localfile = false' in stopSong(); shoulf never occur....
             AUDIO_INFO("Closing audio file \"%s\"", audiofile.name());
             audiofile.close();
         }
+#endif
         memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
         m_validSamples = 0;
         m_audioCurrentTime = 0;

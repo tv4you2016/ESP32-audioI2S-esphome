@@ -137,11 +137,17 @@ int8_t can_decode_ot(const uint8_t object_type) {
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 void* faad_malloc(size_t size) {
-#if 0 // defined(_WIN32) && !defined(_WIN32_WCE)
-    return _aligned_malloc(size, 16);
-#else // #ifdef 0
-    return ps_malloc(size);
-#endif // #ifdef 0
+    char* ps_str = NULL;
+    if(psramFound()){ps_str = (char*) ps_malloc(size);}
+    else             {ps_str = (char*)    malloc(size);}
+    return ps_str;
+}
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void* faad_calloc(size_t len, size_t size) {
+    char* ps_str = NULL;
+    if(psramFound()){ps_str = (char*) ps_calloc(len, size);}
+    else            {ps_str = (char*)    calloc(len, size);}
+    return ps_str;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 /* common free function */
@@ -149,7 +155,7 @@ void faad_free(void* b) {
 #if 0 // defined(_WIN32) && !defined(_WIN32_WCE)
     _aligned_free(b);
 #else
-    free(b);
+    if(b) {free(b); b = NULL;} // free(b);
 }
 #endif
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -436,7 +442,7 @@ const unsigned char mes[] = {0x67, 0x20, 0x61, 0x20, 0x20, 0x20, 0x6f, 0x20, 0x7
 NeAACDecHandle      NeAACDecOpen(void) {
     uint8_t         i;
     NeAACDecStruct* hDecoder = NULL;
-    if((hDecoder = (NeAACDecStruct*)ps_calloc(1, sizeof(NeAACDecStruct))) == NULL) return NULL;
+    if((hDecoder = (NeAACDecStruct*)faad_calloc(1, sizeof(NeAACDecStruct))) == NULL) return NULL;
     memset(hDecoder, 0, sizeof(NeAACDecStruct));
     hDecoder->cmes = mes;
     hDecoder->config.outputFormat = FAAD_FMT_16BIT;
@@ -637,18 +643,9 @@ long NeAACDecInit(NeAACDecHandle hpDecoder, unsigned char* buffer, uint32_t buff
     ret = bits;
     goto exit;
 exit:
-    if(ld) {
-        free(ld);
-        ld = NULL;
-    }
-    if(adts) {
-        free(adts);
-        adts = NULL;
-    }
-    if(adif) {
-        free(adif);
-        adif = NULL;
-    }
+    faad_free(ld);
+    faad_free(adif);
+    faad_free(adts);
     return ret;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -1053,7 +1050,7 @@ void* aac_frame_decode(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, unsig
             //temp = getdword((void*)buf);
             temp = *((uint32_t*)buf);
             printf("0x%.8X\n", temp);
-            free(buf);
+            faad_free(buf);
         }
         faad_endbits(&ld);
         faad_initbits(&ld, buffer, buffer_size);
@@ -3954,7 +3951,7 @@ void faad_imdct(mdct_info* mdct, real_t* X_in, real_t* X_out) {
     mdct->fft_cycles += count1;
     mdct->cycles += (count2 - count1);
 #endif
-    if(Z1) free(Z1);
+    faad_free(Z1);
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 #ifdef LTP_DEC
@@ -4102,7 +4099,7 @@ void mdct(fb_info* fb, real_t* in_data, real_t* out_data, uint16_t len) {
 void ifilter_bank(fb_info* fb, uint8_t window_sequence, uint8_t window_shape, uint8_t window_shape_prev, real_t* freq_in, real_t* time_out, real_t* overlap, uint8_t object_type, uint16_t frame_len) {
     int16_t i;
     //    real_t transf_buf[2*1024] = {0};
-    real_t* transf_buf = (real_t*)ps_calloc(2 * 1024, sizeof(real_t));
+    real_t* transf_buf = (real_t*)faad_calloc(2 * 1024, sizeof(real_t));
     const real_t* window_long = NULL;
     const real_t* window_long_prev = NULL;
     const real_t* window_short = NULL;
@@ -4230,7 +4227,7 @@ void ifilter_bank(fb_info* fb, uint8_t window_sequence, uint8_t window_shape, ui
     count = faad_get_ts() - count;
     fb->cycles += count;
 #endif
-    if(transf_buf) free(transf_buf);
+    faad_free(transf_buf);
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 #ifdef LTP_DEC
@@ -4238,7 +4235,7 @@ void ifilter_bank(fb_info* fb, uint8_t window_sequence, uint8_t window_shape, ui
 void filter_bank_ltp(fb_info* fb, uint8_t window_sequence, uint8_t window_shape, uint8_t window_shape_prev, real_t* in_data, real_t* out_mdct, uint8_t object_type, uint16_t frame_len) {
     int16_t i;
     // real_t windowed_buf[2*1024] = {0};
-    real_t* windowed_buf = (real_t*)ps_calloc(2 * 1024, sizeof(real_t));
+    real_t* windowed_buf = (real_t*)faad_calloc(2 * 1024, sizeof(real_t));
     const real_t* window_long = NULL;
     const real_t* window_long_prev = NULL;
     const real_t* window_short = NULL;
@@ -4284,7 +4281,7 @@ void filter_bank_ltp(fb_info* fb, uint8_t window_sequence, uint8_t window_shape,
             mdct(fb, windowed_buf, out_mdct, 2 * nlong);
             break;
     }
-    if(windowed_buf) free(windowed_buf);
+    faad_free(windowed_buf);
 }
 #endif
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -4548,8 +4545,8 @@ uint8_t reordered_spectral_data(NeAACDecStruct* hDecoder, ic_stream* ics, bitfil
     #endif
     ret = 0;
 exit:
-    if(codeword) free(codeword);
-    if(segment) free(segment);
+    faad_free(codeword);
+    faad_free(segment);
     return ret;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -4959,8 +4956,7 @@ void DCT4_32(real_t* y, real_t* x) {
     y[30] = f[395] + f[396];
     y[1] = f[397] - f[396];
     if(f) {
-        free(f);
-        f = NULL;
+        faad_free(f);
     }
 }
 #endif // SBR_DEC
@@ -5338,8 +5334,7 @@ void DST4_32(real_t* y, real_t* x) {
     y[1] = MUL_C(COEF_CONST(6.7967507116736332), f[306]);
     y[0] = MUL_R(REAL_CONST(20.3738781672314530), f[304]);
     if(f) {
-        free(f);
-        f = NULL;
+        faad_free(f);
     }
 }
 #endif // SBR_DEC
@@ -7191,10 +7186,9 @@ static uint8_t allocate_channel_pair(NeAACDecStruct* hDecoder, uint8_t channel, 
 }
 // ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 uint8_t reconstruct_single_channel(NeAACDecStruct* hDecoder, ic_stream* ics, element* sce, int16_t* spec_data) {
-    uint8_t retval;
+    uint8_t retval = 0;
     int     output_channels;
-    // real_t spec_coef[1024];
-    real_t* spec_coef = (real_t*)ps_malloc(1024 * sizeof(real_t));
+    real_t* spec_coef = (real_t*)faad_malloc(1024 * sizeof(real_t));
 #ifdef PROFILE
     int64_t count = faad_get_ts();
 #endif
@@ -7219,8 +7213,12 @@ uint8_t reconstruct_single_channel(NeAACDecStruct* hDecoder, ic_stream* ics, ele
          */
         /* reset the allocation */
         hDecoder->element_alloced[hDecoder->fr_ch_ele] = 0;
+        memset(&hDecoder->element_alloced[hDecoder->fr_ch_ele], 0,
+            sizeof(uint8_t) * (MAX_SYNTAX_ELEMENTS - hDecoder->fr_ch_ele));
+
         hDecoder->element_output_channels[hDecoder->fr_ch_ele] = output_channels;
-        // return 21;
+        //retval = 21;
+        //goto exit;
     }
     if (hDecoder->element_alloced[hDecoder->fr_ch_ele] == 0) {
         retval = allocate_single_channel(hDecoder, sce->channel, output_channels);
@@ -7351,7 +7349,7 @@ uint8_t reconstruct_single_channel(NeAACDecStruct* hDecoder, ic_stream* ics, ele
 #endif
     retval = 0;
 exit:
-    if (spec_coef) { free(spec_coef); }
+    faad_free(spec_coef);
     return retval;
 }
 // ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -7359,8 +7357,8 @@ uint8_t reconstruct_channel_pair(NeAACDecStruct* hDecoder, ic_stream* ics1, ic_s
     uint8_t retval;
     // real_t spec_coef1[1024];
     // real_t spec_coef2[1024];
-    real_t* spec_coef1 = (real_t*)ps_malloc(1024 * sizeof(real_t));
-    real_t* spec_coef2 = (real_t*)ps_malloc(1024 * sizeof(real_t));
+    real_t* spec_coef1 = (real_t*)faad_malloc(1024 * sizeof(real_t));
+    real_t* spec_coef2 = (real_t*)faad_malloc(1024 * sizeof(real_t));
 #ifdef PROFILE
     int64_t count = faad_get_ts();
 #endif
@@ -7524,8 +7522,8 @@ uint8_t reconstruct_channel_pair(NeAACDecStruct* hDecoder, ic_stream* ics1, ic_s
 #endif
     retval = 0;
 exit:
-    if (spec_coef1) free(spec_coef1);
-    if (spec_coef2) free(spec_coef2);
+    faad_free(spec_coef1);
+    faad_free(spec_coef2);
     return retval;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -7823,6 +7821,8 @@ void decode_sce_lfe(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile*
     */
     if (hDecoder->element_id[hDecoder->fr_ch_ele] != INVALID_ELEMENT_ID && hDecoder->element_id[hDecoder->fr_ch_ele] != id_syn_ele) {
         /* element inconsistency */
+        memset(&hDecoder->element_alloced[hDecoder->fr_ch_ele], 0,
+            sizeof(uint8_t) * (MAX_SYNTAX_ELEMENTS - hDecoder->fr_ch_ele));
         hInfo->error = 21;
         return;
     }
@@ -7847,6 +7847,7 @@ void decode_sce_lfe(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile*
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 void decode_cpe(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile* ld, uint8_t id_syn_ele) {
     uint8_t channels = hDecoder->fr_channels;
+    hInfo->error = 0;
     uint8_t tag = 0;
     if (channels + 2 > MAX_CHANNELS) {
         hInfo->error = 12;
@@ -7862,11 +7863,15 @@ void decode_cpe(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile* ld,
         hDecoder->element_output_channels[hDecoder->fr_ch_ele] = 2;
     } else if (hDecoder->element_output_channels[hDecoder->fr_ch_ele] != 2) {
         /* element inconsistency */
+        memset(&hDecoder->element_alloced[hDecoder->fr_ch_ele], 0,
+            sizeof(uint8_t) * (MAX_SYNTAX_ELEMENTS - hDecoder->fr_ch_ele));
         hInfo->error = 21;
         return;
     }
     if (hDecoder->element_id[hDecoder->fr_ch_ele] != INVALID_ELEMENT_ID && hDecoder->element_id[hDecoder->fr_ch_ele] != id_syn_ele) {
         /* element inconsistency */
+        memset(&hDecoder->element_alloced[hDecoder->fr_ch_ele], 0,
+            sizeof(uint8_t) * (MAX_SYNTAX_ELEMENTS - hDecoder->fr_ch_ele));
         hInfo->error = 21;
         return;
     }
@@ -7956,12 +7961,7 @@ void raw_data_block(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile*
                     /* one sbr_info describes a channel_element not a channel! */
                     /* if we encounter SBR data here: error */
                     /* SBR data will be read directly in the SCE/LFE/CPE element */
-                    if ((hInfo->error = fill_element(hDecoder, ld, drc
-#ifdef SBR_DEC
-                                                     ,
-                                                     INVALID_SBR_ELEMENT
-#endif
-                                                     )) > 0)
+                    if ((hInfo->error = fill_element(hDecoder, ld, drc, INVALID_SBR_ELEMENT)) > 0)
                         return;
                     break;
             }
@@ -8052,10 +8052,10 @@ void raw_data_block(NeAACDecStruct* hDecoder, NeAACDecFrameInfo* hInfo, bitfile*
 uint8_t single_lfe_channel_element(NeAACDecStruct* hDecoder, bitfile* ld, uint8_t channel, uint8_t* tag) {
     uint8_t retval = 0;
     //  element       sce = {0};
-    element*   sce = (element*)ps_calloc(1, sizeof(element));
+    element*   sce = (element*)faad_calloc(1, sizeof(element));
     ic_stream* ics = &(sce->ics1);
     // int16_t spec_data[1024] = {0};
-    int16_t* spec_data = (int16_t*)ps_calloc(1024, sizeof(int16_t));
+    int16_t* spec_data = (int16_t*)faad_calloc(1024, sizeof(int16_t));
     sce->element_instance_tag = (uint8_t)faad_getbits(ld, LEN_TAG);
     *tag = sce->element_instance_tag;
     sce->channel = channel;
@@ -8081,8 +8081,8 @@ uint8_t single_lfe_channel_element(NeAACDecStruct* hDecoder, bitfile* ld, uint8_
     if (retval > 0) goto exit;
     retval = 0;
 exit:
-    if (spec_data) free(spec_data);
-    if (sce) free(sce);
+    faad_free(sce);
+    faad_free(spec_data);
     return retval;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -8090,10 +8090,10 @@ exit:
 uint8_t channel_pair_element(NeAACDecStruct* hDecoder, bitfile* ld, uint8_t channels, uint8_t* tag) {
     // int16_t spec_data1[1024] = {0};
     // int16_t spec_data2[1024] = {0};
-    int16_t* spec_data1 = (int16_t*)ps_calloc(1024, sizeof(int16_t));
-    int16_t* spec_data2 = (int16_t*)ps_calloc(1024, sizeof(int16_t));
+    int16_t* spec_data1 = (int16_t*)faad_calloc(1024, sizeof(int16_t));
+    int16_t* spec_data2 = (int16_t*)faad_calloc(1024, sizeof(int16_t));
     // element    cpe = {0};
-    element*   cpe = (element*)ps_calloc(1, sizeof(element));
+    element*   cpe = (element*)faad_calloc(1, sizeof(element));
     ic_stream* ics1 = &(cpe->ics1);
     ic_stream* ics2 = &(cpe->ics2);
     uint8_t    result;
@@ -8169,15 +8169,9 @@ uint8_t channel_pair_element(NeAACDecStruct* hDecoder, bitfile* ld, uint8_t chan
     if ((result = reconstruct_channel_pair(hDecoder, ics1, ics2, cpe, spec_data1, spec_data2)) > 0) { goto exit; }
     result = 0;
 exit:
-    if (spec_data1) {
-        free(spec_data1);
-        spec_data1 = NULL;
-    }
-    if (spec_data2) {
-        free(spec_data2);
-        spec_data2 = NULL;
-    }
-    if (cpe) free(cpe);
+    faad_free(spec_data1);
+    faad_free(spec_data2);
+    faad_free(cpe);
     return result;
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -8343,12 +8337,7 @@ uint16_t data_stream_element(NeAACDecStruct* hDecoder, bitfile* ld) {
 }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 /* Table 4.4.11 */
-uint8_t fill_element(NeAACDecStruct* hDecoder, bitfile* ld, drc_info* drc
-#ifdef SBR_DEC
-                            ,
-                            uint8_t sbr_ele
-#endif
-) {
+uint8_t fill_element(NeAACDecStruct* hDecoder, bitfile* ld, drc_info* drc,  uint8_t sbr_ele) {
     uint16_t count;
 #ifdef SBR_DEC
     uint8_t bs_extension_type;
@@ -10058,8 +10047,8 @@ void lt_prediction(ic_stream* ics, ltp_info* ltp, real_t* spec, int16_t* lt_pred
     uint16_t     bin, i, num_samples;
     // real_t x_est[2048];
     // real_t X_est[2048];
-    real_t* x_est = (real_t*)ps_malloc(2048 * sizeof(real_t));
-    real_t* X_est = (real_t*)ps_malloc(2048 * sizeof(real_t));
+    real_t* x_est = (real_t*)faad_malloc(2048 * sizeof(real_t));
+    real_t* X_est = (real_t*)faad_malloc(2048 * sizeof(real_t));
     if(ics->window_sequence != EIGHT_SHORT_SEQUENCE) {
         if(ltp->data_present) {
             num_samples = frame_len << 1;
@@ -10839,9 +10828,9 @@ void ps_decorrelate(ps_info* ps, qmf_t X_left[38][64], qmf_t X_right[38][64], qm
     uint8_t          temp_delay_ser[NO_ALLPASS_LINKS];
     real_t           P_SmoothPeakDecayDiffNrg, nrg;
     // real_t           P[32][34];
-    real_t (*P)[34] = (real_t (*)[34])ps_malloc(32 * sizeof(real_t[34]));
+    real_t (*P)[34] = (real_t (*)[34])faad_malloc(32 * sizeof(real_t[34]));
     // real_t           G_TransientRatio[32][34] = {{0}};
-    real_t (*G_TransientRatio)[34] = (real_t (*)[34])ps_calloc(32, sizeof(real_t[34]));
+    real_t (*G_TransientRatio)[34] = (real_t (*)[34])faad_calloc(32, sizeof(real_t[34]));
     complex_t        inputLeft;
     /* chose hybrid filterbank: 20 or 34 band case */
     if(ps->use34hybrid_bands) { Phi_Fract_SubQmf = Phi_Fract_SubQmf34; }
@@ -11581,8 +11570,8 @@ ps_info* ps_init(uint8_t sr_index, uint8_t numTimeSlotsRate) {
 uint8_t ps_decode(ps_info* ps, qmf_t X_left[38][64], qmf_t X_right[38][64]) {
     // qmf_t X_hybrid_left[32][32] = {{{0}}};
     // qmf_t X_hybrid_right[32][32] = {{{0}}};
-    qmf_t (*X_hybrid_left)[32] = (qmf_t (*)[32])ps_calloc(32, 32 * sizeof(qmf_t));
-    qmf_t (*X_hybrid_right)[32] = (qmf_t (*)[32])ps_calloc(32, 32 * sizeof(qmf_t));
+    qmf_t (*X_hybrid_left)[32] = (qmf_t (*)[32])faad_calloc(32, 32 * sizeof(qmf_t));
+    qmf_t (*X_hybrid_right)[32] = (qmf_t (*)[32])faad_calloc(32, 32 * sizeof(qmf_t));
     /* delta decoding of the bitstream data */
     ps_data_decode(ps);
     /* set up some parameters depending on filterbank type */
@@ -11611,8 +11600,8 @@ uint8_t ps_decode(ps_info* ps, qmf_t X_left[38][64], qmf_t X_right[38][64]) {
     /* hybrid synthesis, to rebuild the SBR QMF matrices */
     hybrid_synthesis((hyb_info*)ps->hyb, X_left, X_hybrid_left, ps->use34hybrid_bands, ps->numTimeSlotsRate);
     hybrid_synthesis((hyb_info*)ps->hyb, X_right, X_hybrid_right, ps->use34hybrid_bands, ps->numTimeSlotsRate);
-    if(X_hybrid_left) free(X_hybrid_left);
-    if(X_hybrid_right) free(X_hybrid_right);
+    faad_free(X_hybrid_left);
+    faad_free(X_hybrid_right);
     return 0;
 }
 #endif //  PS_DEC
@@ -12090,7 +12079,7 @@ uint8_t sbrDecodeCoupleFrame(sbr_info* sbr, real_t* left_chan, real_t* right_cha
     uint8_t dont_process = 0;
     uint8_t ret = 0;
     // qmf_t X[MAX_NTSR][64];
-    qmf_t(*X)[64] = (qmf_t(*)[64])ps_malloc(MAX_NTSR * 64 * sizeof(qmf_t));
+    qmf_t(*X)[64] = (qmf_t(*)[64])faad_malloc(MAX_NTSR * 64 * sizeof(qmf_t));
     if (sbr == NULL) {
         ret = 20;
         goto exit;
@@ -12145,7 +12134,7 @@ uint8_t sbrDecodeCoupleFrame(sbr_info* sbr, real_t* left_chan, real_t* right_cha
     #endif
     ret = 0;
 exit:
-    if (X) free(X);
+    faad_free(X);
     return ret;
 }
 #endif // #ifdef SBR_DEC
@@ -12155,7 +12144,7 @@ uint8_t sbrDecodeSingleFrame(sbr_info* sbr, real_t* channel, const uint8_t just_
     uint8_t dont_process = 0;
     uint8_t ret = 0;
     // qmf_t X[MAX_NTSR][64];
-    qmf_t(*X)[64] = (qmf_t(*)[64])ps_malloc(MAX_NTSR * 64 * sizeof(qmf_t));
+    qmf_t(*X)[64] = (qmf_t(*)[64])faad_malloc(MAX_NTSR * 64 * sizeof(qmf_t));
     if (sbr == NULL) {
         ret = 20;
         goto exit;
@@ -12199,7 +12188,7 @@ uint8_t sbrDecodeSingleFrame(sbr_info* sbr, real_t* channel, const uint8_t just_
     #endif
     ret = 0;
 exit:
-    if (X) free(X);
+    faad_free(X);
     return ret;
 }
 #endif // #ifdef SBR_DEC
@@ -12212,8 +12201,8 @@ uint8_t sbrDecodeSingleFramePS(sbr_info* sbr, real_t* left_channel, real_t* righ
     uint8_t ret = 0;
     // qmf_t X_left[38][64] = {{{0}}};
     // qmf_t X_right[38][64] = {{{0}}}; /* must set this to 0 */
-    qmf_t(*X_left)[64] = (qmf_t(*)[64])ps_calloc(38, 64 * sizeof(qmf_t));
-    qmf_t(*X_right)[64] = (qmf_t(*)[64])ps_calloc(38, 64 * sizeof(qmf_t));
+    qmf_t(*X_left)[64] = (qmf_t(*)[64])faad_calloc(38, 64 * sizeof(qmf_t));
+    qmf_t(*X_right)[64] = (qmf_t(*)[64])faad_calloc(38, 64 * sizeof(qmf_t));
     if (sbr == NULL) {
         ret = 20;
         goto exit;
@@ -12275,8 +12264,8 @@ uint8_t sbrDecodeSingleFramePS(sbr_info* sbr, real_t* left_channel, real_t* righ
     sbr->frame++;
     ret = 0;
 exit:
-    if (X_left) free(X_left);
-    if (X_right) free(X_right);
+    faad_free(X_left);
+    faad_free(X_right);
     return ret;
 }
     #endif // (defined(PS_DEC) || defined(DRM_PS))
@@ -12768,10 +12757,10 @@ uint8_t master_frequency_table(sbr_info* sbr, uint8_t k0, uint8_t k2, uint8_t bs
     uint8_t nrBand0, nrBand1;
     // int32_t vDk0[64] = {0}, vDk1[64] = {0};
     // int32_t vk0[64] = {0}, vk1[64] = {0};
-    int32_t* vDk0 = (int32_t*) ps_calloc(64, sizeof(int32_t));
-    int32_t* vDk1 = (int32_t*) ps_calloc(64, sizeof(int32_t));
-    int32_t* vk0  = (int32_t*) ps_calloc(64, sizeof(int32_t));
-    int32_t* vk1  = (int32_t*) ps_calloc(64, sizeof(int32_t));
+    int32_t* vDk0 = (int32_t*) faad_calloc(64, sizeof(int32_t));
+    int32_t* vDk1 = (int32_t*) faad_calloc(64, sizeof(int32_t));
+    int32_t* vk0  = (int32_t*) faad_calloc(64, sizeof(int32_t));
+    int32_t* vk1  = (int32_t*) faad_calloc(64, sizeof(int32_t));
     uint8_t temp1[] = {6, 5, 4};
     real_t  q, qk;
     int32_t A_1;
@@ -12887,10 +12876,10 @@ uint8_t master_frequency_table(sbr_info* sbr, uint8_t k0, uint8_t k2, uint8_t bs
     #endif
     ret = 0;
 exit:
-    if(vDk0)free(vDk0);
-    if(vDk1)free(vDk1);
-    if(vk0) free(vk0);
-    if(vk1) free(vk1);
+    faad_free(vDk0);
+    faad_free(vDk1);
+    faad_free(vk0);
+    faad_free(vk1);
     return ret;
 }
 #endif
@@ -13091,8 +13080,8 @@ void limiter_frequency_table(sbr_info* sbr) {
     #endif
     }
 exit:
-    if(limTable) free(limTable);
-    if(patchBorders) free(patchBorders);
+    faad_free(limTable);
+    faad_free(patchBorders);
 }
 #endif // SBR_DEC
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -14427,7 +14416,7 @@ void sinusoidal_coding(bitfile* ld, sbr_info* sbr, uint8_t ch) {
 #ifdef SBR_DEC
 uint8_t hf_adjustment(sbr_info* sbr, qmf_t Xsbr[MAX_NTSRHFG][64], real_t* deg /* aliasing degree */, uint8_t ch) {
     // sbr_hfadj_info adj = {0};
-    sbr_hfadj_info* adj = (sbr_hfadj_info*)ps_calloc(1, sizeof(sbr_hfadj_info));
+    sbr_hfadj_info* adj = (sbr_hfadj_info*)faad_calloc(1, sizeof(sbr_hfadj_info));
     uint8_t        ret = 0;
     if (sbr->bs_frame_class[ch] == FIXFIX) {
         sbr->l_A[ch] = -1;
@@ -14680,9 +14669,9 @@ void calculate_gain(sbr_info* sbr, sbr_hfadj_info* adj, uint8_t ch) {
     // real_t G_lim[MAX_M];
     // real_t S_M[MAX_M];
     real_t G_boost;
-    real_t* Q_M_lim = (real_t*)ps_malloc(MAX_M * sizeof(real_t));
-    real_t* G_lim = (real_t*)ps_malloc(MAX_M * sizeof(real_t));
-    real_t* S_M = (real_t*)ps_malloc(MAX_M * sizeof(real_t));
+    real_t* Q_M_lim = (real_t*)faad_malloc(MAX_M * sizeof(real_t));
+    real_t* G_lim = (real_t*)faad_malloc(MAX_M * sizeof(real_t));
+    real_t* S_M = (real_t*)faad_malloc(MAX_M * sizeof(real_t));
     for (l = 0; l < sbr->L_E[ch]; l++) {
         uint8_t current_f_noise_band = 0;
         uint8_t current_res_band = 0;
@@ -14876,11 +14865,11 @@ float QUANTISE2INT(float val) {
 void hf_generation(sbr_info* sbr, qmf_t Xlow[MAX_NTSRHFG][64], qmf_t Xhigh[MAX_NTSRHFG][64], real_t* deg, uint8_t ch) {
     uint8_t l, i, x;
     //    complex_t alpha_0[64], alpha_1[64];
-    complex_t* alpha_0 = (complex_t*)ps_malloc(64 * sizeof(complex_t));
-    complex_t* alpha_1 = (complex_t*)ps_malloc(64 * sizeof(complex_t));
+    complex_t* alpha_0 = (complex_t*)faad_malloc(64 * sizeof(complex_t));
+    complex_t* alpha_1 = (complex_t*)faad_malloc(64 * sizeof(complex_t));
     #ifdef SBR_LOW_POWER
     // real_t rxx[64];
-    real_t* rxx = ps_malloc(64 * sizeof(real_t));
+    real_t* rxx = faad_malloc(64 * sizeof(real_t));
     #endif
         uint8_t offset = sbr->tHFAdj;
     uint8_t     first = sbr->t_E[ch][0];
@@ -14961,10 +14950,10 @@ void hf_generation(sbr_info* sbr, qmf_t Xlow[MAX_NTSRHFG][64], qmf_t Xhigh[MAX_N
         }
     }
     if (sbr->Reset) { limiter_frequency_table(sbr); }
-    if (alpha_0) free(alpha_0);
-    if (alpha_1) free(alpha_1);
+    faad_free(alpha_0);
+    faad_free(alpha_1);
     #ifdef SBR_LOW_POWER
-    if (rxx) free(rxx);
+    faad_free(rxx);
     #endif
 }
 #endif // SBR_DEC

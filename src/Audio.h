@@ -1,10 +1,11 @@
+#include "esp_arduino_version.h"
 /*
  * Audio.h
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.12n
- *  Updated on: Sep 09.2024
+ *  Version 3.0.13j
+ *  Updated on: Oct 30.2024
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -15,11 +16,23 @@
 #include <libb64/cencode.h>
 #include <esp32-hal-log.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #ifndef AUDIO_NO_SD_FS	
+#include <SD.h>
+#include <SD_MMC.h>
+#include <SPIFFS.h>
 #include <FS.h>
+#include <FFat.h>
 #endif // AUDIO_NO_SD_FS
 #include <atomic>
+#include <codecvt>
+#include <locale>
+
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#include <NetworkClient.h>
+#include <NetworkClientSecure.h>
+#endif
 
 #if ESP_IDF_VERSION_MAJOR == 5
 #include <driver/i2s_std.h>
@@ -105,7 +118,6 @@ public:
     bool     havePSRAM() { return m_f_psram; };
 
 protected:
-    SemaphoreHandle_t mutex_buffer;
     size_t            m_buffSizePSRAM    = UINT16_MAX * 10;   // most webstreams limit the advance to 100...300Kbytes
     size_t            m_buffSizeRAM      = 1600 * 10;
     size_t            m_buffSize         = 0;
@@ -119,11 +131,15 @@ protected:
     uint8_t*          m_writePtr         = NULL;
     uint8_t*          m_readPtr          = NULL;
     uint8_t*          m_endPtr           = NULL;
-    bool              m_f_start          = true;
     bool              m_f_init           = false;
+    bool              m_f_isEmpty        = true;
     bool              m_f_psram          = false;    // PSRAM is available (and used...)
 };
 //----------------------------------------------------------------------------------------------------------------------
+
+static const size_t AUDIO_STACK_SIZE = 3300;
+static StaticTask_t __attribute__((unused)) xAudioTaskBuffer;
+static StackType_t  __attribute__((unused)) xAudioStack[AUDIO_STACK_SIZE];
 
 class Audio : private AudioBuffer{
 
@@ -177,7 +193,6 @@ public:
     void setI2SCommFMT_LSB(bool commFMT);
     int getCodec() {return m_codec;}
     const char *getCodecname() {return codecname[m_codec];}
-    void unicode2utf8(char* buff, uint32_t len);
 
 private:
 
@@ -195,6 +210,7 @@ private:
   void            setDefaults(); // free buffers and set defaults
   void            initInBuff();
   bool            httpPrint(const char* host);
+  bool            httpRange(const char* host, uint32_t range);
   void            processLocalFile();
   void            processWebStream();
   void            processWebFile();
@@ -202,7 +218,6 @@ private:
   void            processWebStreamHLS();
   void            playAudioData();
   bool            readPlayListData();
-  bool            setWebFilePos(uint32_t pos);
   const char*     parsePlaylist_M3U();
   const char*     parsePlaylist_PLS();
   const char*     parsePlaylist_ASX();
@@ -252,10 +267,6 @@ public:
   void            setAudioTaskCore(uint8_t coreID);
   uint32_t        getHighWatermark();
 private:
-  static const size_t STACK_SIZE = 3300;
-  StaticTask_t xTaskBuffer;
-  StackType_t xStack[STACK_SIZE];
-
   void            startAudioTask(); // starts a task for decode and play
   void            stopAudioTask();  // stops task for audio
   static void     taskWrapper(void *param);
@@ -269,12 +280,10 @@ private:
   boolean  streamDetection(uint32_t bytesAvail);
   void     seek_m4a_stsz();
   void     seek_m4a_ilst();
-#ifndef AUDIO_NO_SD_FS	
   uint32_t m4a_correctResumeFilePos(uint32_t resumeFilePos);
   uint32_t ogg_correctResumeFilePos(uint32_t resumeFilePos);
   int32_t  flac_correctResumeFilePos(uint32_t resumeFilePos);
   int32_t  mp3_correctResumeFilePos(uint32_t resumeFilePos);
-#endif
   uint8_t  determineOggCodec(uint8_t* data, uint16_t len);
 
   //++++ implement several function with respect to the index of string ++++
@@ -481,6 +490,10 @@ uint64_t bigEndian(uint8_t* base, uint8_t numBytes, uint8_t shiftLeft = 8) {
         return ps_str;
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    void x_ps_free(void* b){
+        if(b){free(b); b = NULL;}
+    }
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 // Function to reverse the byte order of a 32-bit value (big-endian to little-endian)
     uint32_t bswap32(uint32_t x) {
         return ((x & 0xFF000000) >> 24) |
@@ -534,14 +547,20 @@ private:
         int pids[4];
     } pid_array;
 #ifndef AUDIO_NO_SD_FS
-    File                  audiofile;    // @suppress("Abstract class cannot be instantiated")
+        File                  audiofile;
 #endif  // AUDIO_NO_SD_FS		
-    WiFiClient            client;       // @suppress("Abstract class cannot be instantiated")
-    WiFiClientSecure      clientsecure; // @suppress("Abstract class cannot be instantiated")
+#ifndef ETHERNET_IF
+    WiFiClient            client;
+    WiFiClientSecure      clientsecure;
     WiFiClient*           _client = nullptr;
+#else
+    NetworkClient	      client;
+    NetworkClientSecure	  clientsecure;
+    NetworkClient*       _client = nullptr;
+#endif
     SemaphoreHandle_t     mutex_playAudioData;
+    SemaphoreHandle_t     mutex_audioTask;
     TaskHandle_t          m_audioTaskHandle = nullptr;
-
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #if ESP_IDF_VERSION_MAJOR == 5
@@ -635,6 +654,7 @@ private:
     uint32_t        m_stsz_position = 0;            // pos of stsz atom within file
     uint32_t        m_haveNewFilePos = 0;           // user changed the file position
     uint32_t        m_sumBytesDecoded = 0;          // used for streaming
+    uint32_t        m_webFilePos = 0;               // same as audiofile.position() for SD files
     bool            m_f_metadata = false;           // assume stream without metadata
     bool            m_f_unsync = false;             // set within ID3 tag but not used
     bool            m_f_exthdr = false;             // ID3 extended header
@@ -666,6 +686,7 @@ private:
     bool            m_f_eof = false;                // end of file
     bool            m_f_lockInBuffer = false;       // lock inBuffer for manipulation
     bool            m_f_audioTaskIsDecoding = false;
+    bool            m_f_acceptRanges = false;
     uint8_t         m_f_channelEnabled = 3;         // internal DAC, both channels
     uint32_t        m_audioFileDuration = 0;
     float           m_audioCurrentTime = 0;

@@ -260,8 +260,9 @@ private:
   inline uint32_t streamavail() { return _client ? _client->available() : 0; }
   void            IIR_calculateCoefficients(int8_t G1, int8_t G2, int8_t G3);
   bool            ts_parsePacket(uint8_t* packet, uint8_t* packetStart, uint8_t* packetLength);
+#ifndef AUDIO_NO_SD_FS 
   uint32_t        find_m4a_atom(uint32_t fileSize, const char* atomType, uint32_t depth = 0);
-
+#endif
   //+++ create a T A S K  for playAudioData(), output via I2S +++
 public:
   void            setAudioTaskCore(uint8_t coreID);
@@ -278,12 +279,14 @@ private:
   size_t   chunkedDataTransfer(uint8_t* bytes);
   bool     readID3V1Tag();
   boolean  streamDetection(uint32_t bytesAvail);
+#ifndef AUDIO_NO_SD_FS 
   void     seek_m4a_stsz();
   void     seek_m4a_ilst();
   uint32_t m4a_correctResumeFilePos(uint32_t resumeFilePos);
   uint32_t ogg_correctResumeFilePos(uint32_t resumeFilePos);
   int32_t  flac_correctResumeFilePos(uint32_t resumeFilePos);
   int32_t  mp3_correctResumeFilePos(uint32_t resumeFilePos);
+#endif
   uint8_t  determineOggCodec(uint8_t* data, uint16_t len);
 
   //++++ implement several function with respect to the index of string ++++
@@ -547,8 +550,9 @@ private:
         int pids[4];
     } pid_array;
 #ifndef AUDIO_NO_SD_FS
-        File                  audiofile;
+    File                  audiofile;    // @suppress("Abstract class cannot be instantiated")
 #endif  // AUDIO_NO_SD_FS		
+
 #ifndef ETHERNET_IF
     WiFiClient            client;
     WiFiClientSecure      clientsecure;
@@ -561,6 +565,7 @@ private:
     SemaphoreHandle_t     mutex_playAudioData;
     SemaphoreHandle_t     mutex_audioTask;
     TaskHandle_t          m_audioTaskHandle = nullptr;
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #if ESP_IDF_VERSION_MAJOR == 5

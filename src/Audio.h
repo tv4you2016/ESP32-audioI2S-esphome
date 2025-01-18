@@ -4,8 +4,8 @@
  *
  *  Created on: Oct 28,2018
  *
- *  Version 3.0.13m
- *  Updated on: Nov 07.2024
+ *  Version 3.1.0a
+ *  Updated on: Jan 16.2025
  *      Author: Wolle (schreibfaul1)
  */
 
@@ -100,7 +100,6 @@ public:
     ~AudioBuffer();                             // frees the buffer
     size_t   init();                            // set default values
     bool     isInitialized() { return m_f_init; };
-    void     setBufsize(int ram, int psram);
     int32_t  getBufsize();
     void     changeMaxBlockSize(uint16_t mbs);  // is default 1600 for mp3 and aac, set 16384 for FLAC
     uint16_t getMaxBlockSize();                 // returns maxBlockSize
@@ -148,7 +147,6 @@ class Audio : private AudioBuffer{
 public:
     Audio(bool internalDAC = false, uint8_t channelEnabled = 3, uint8_t i2sPort = I2S_NUM_0); // #99
     ~Audio();
-    void setBufsize(int rambuf_sz, int psrambuf_sz);
     bool openai_speech(const String& api_key, const String& model, const String& input, const String& voice, const String& response_format, const String& speed);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
     bool connecttospeech(const char* speech, const char* lang);
@@ -159,7 +157,6 @@ public:
     void setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl);
     bool setAudioPlayPosition(uint16_t sec);
     bool setFilePos(uint32_t pos);
-    bool audioFileSeek(const float speed);
     bool setTimeOffset(int sec);
     bool setPinout(uint8_t BCLK, uint8_t LRC, uint8_t DOUT, int8_t MCLK = I2S_GPIO_UNUSED);
     bool pauseResume();
@@ -251,7 +248,7 @@ private:
   void            showstreamtitle(const char* ml);
   bool            parseContentType(char* ct);
   bool            parseHttpResponseHeader();
-  bool            initializeDecoder();
+  bool            initializeDecoder(uint8_t codec);
   esp_err_t       I2Sstart(uint8_t i2s_num);
   esp_err_t       I2Sstop(uint8_t i2s_num);
   void            IIR_filterChain0(int16_t iir_in[2], bool clear = false);
@@ -391,6 +388,13 @@ void trim(char *str) {
         }
         return result;
     }
+
+    int32_t min3(int32_t a, int32_t b, int32_t c){
+        uint32_t min_val = a;
+        if (b < min_val) min_val = b;
+        if (c < min_val) min_val = c;
+        return min_val;
+    }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // some other functions
 uint64_t bigEndian(uint8_t* base, uint8_t numBytes, uint8_t shiftLeft = 8) {
@@ -473,28 +477,37 @@ uint64_t bigEndian(uint8_t* base, uint8_t numBytes, uint8_t shiftLeft = 8) {
     char* x_ps_malloc(uint16_t len) {
         char* ps_str = NULL;
         if(psramFound()){ps_str = (char*) ps_malloc(len);}
-        else             {ps_str = (char*)    malloc(len);}
+        else            {ps_str = (char*)    malloc(len);}
+        if(!ps_str) log_e("oom");
         return ps_str;
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     char* x_ps_calloc(uint16_t len, uint8_t size) {
         char* ps_str = NULL;
         if(psramFound()){ps_str = (char*) ps_calloc(len, size);}
-        else             {ps_str = (char*)    calloc(len, size);}
+        else            {ps_str = (char*)    calloc(len, size);}
+        if(!ps_str) log_e("oom");
         return ps_str;
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     char* x_ps_strdup(const char* str) {
-        if(!str) return strdup(""); // better not to return NULL
+        if(!str) {log_e("Input str is NULL"); return NULL;};
         char* ps_str = NULL;
         if(psramFound()) { ps_str = (char*)ps_malloc(strlen(str) + 1); }
         else { ps_str = (char*)malloc(strlen(str) + 1); }
+        if(!ps_str){log_e("oom"); return NULL;}
         strcpy(ps_str, str);
         return ps_str;
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
-    void x_ps_free(void* b){
-        if(b){free(b); b = NULL;}
+    void x_ps_free(char** b){
+        if(*b){free(*b); *b = NULL;}
+    }
+    void x_ps_free(int16_t** b){
+        if(*b){free(*b); *b = NULL;}
+    }
+    void x_ps_free(uint8_t** b){
+        if(*b){free(*b); *b = NULL;}
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 // Function to reverse the byte order of a 32-bit value (big-endian to little-endian)
@@ -600,6 +613,7 @@ private:
     char*           m_lastHost = NULL;              // Store the last URL to a webstream
     char*           m_lastM3U8host = NULL;
     char*           m_playlistBuff = NULL;          // stores playlistdata
+    char*           m_speechtxt = NULL;             // stores tts text
     const uint16_t  m_plsBuffEntryLen = 256;        // length of each entry in playlistBuff
     filter_t        m_filter[3];                    // digital filters
     int             m_LFcount = 0;                  // Detection of end of header
@@ -688,6 +702,7 @@ private:
     bool            m_f_commFMT = false;            // false: default (PHILIPS), true: Least Significant Bit Justified (japanese format)
     bool            m_f_audioTaskIsRunning = false;
     bool            m_f_stream = false;             // stream ready for output?
+    bool            m_f_decode_ready = false;       // if true data for decode are ready
     bool            m_f_eof = false;                // end of file
     bool            m_f_lockInBuffer = false;       // lock inBuffer for manipulation
     bool            m_f_audioTaskIsDecoding = false;

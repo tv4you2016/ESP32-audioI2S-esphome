@@ -3,8 +3,8 @@
  *
  *  Created on: Oct 28.2018
  *
- *  Version 3.1.0a
- *  Updated on: Jan 16.2025
+ *  Version 3.1.0b
+ *  Updated on: Jan 22.2025
  *      Author: Wolle (schreibfaul1)
  *
  */
@@ -169,15 +169,6 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     m_f_Log = true;
 #endif
 #define AUDIO_INFO(...) { snprintf(m_ibuff, m_ibuffSize, __VA_ARGS__); if(audio_info) audio_info(m_ibuff); }
-
-    m_f_psramFound = psramInit();
-    if(m_f_psramFound) m_chbufSize = 4096; else m_chbufSize = 512 + 64;
-    if(m_f_psramFound) m_ibuffSize = 4096; else m_ibuffSize = 512 + 64;
-    m_lastHost = (char*)   x_ps_malloc(2048);
-    m_outBuff  = (int16_t*)x_ps_malloc(m_outbuffSize * sizeof(int16_t));
-    m_chbuf    = (char*)   x_ps_malloc(m_chbufSize);
-    m_ibuff    = (char*)   x_ps_malloc(m_ibuffSize);
-    if(!m_chbuf || !m_lastHost || !m_outBuff || !m_ibuff) log_e("oom");
 
     clientsecure.setInsecure();
     m_f_channelEnabled = channelEnabled;
@@ -498,6 +489,7 @@ bool Audio::openai_speech(const String& api_key, const String& model, const Stri
 bool Audio::connecttohost(const char* host, const char* user, const char* pwd) { // user and pwd for authentification only, can be empty
 
     bool     res           = false; // return value
+    char*    c_host        = NULL;  // copy of host
     uint16_t lenHost       = 0;     // length of hostname
     uint16_t port          = 0;     // port number
     uint16_t authLen       = 0;     // length of authorization
@@ -534,7 +526,9 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
     if (host == NULL)              { AUDIO_INFO("Hostaddress is empty");     stopSong(); goto exit;}
     if (strlen(host) > 2048)       { AUDIO_INFO("Hostaddress is too long");  stopSong(); goto exit;} // max length in Chrome DevTools
 
-    h_host = urlencode(host, true);
+    c_host = x_ps_strdup(host); // make a copy
+    h_host = urlencode(c_host, true);
+
     trim(h_host);  // remove leading and trailing spaces
     lenHost = strlen(h_host);
 
@@ -545,16 +539,14 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
 
     // In the URL there may be an extension, like noisefm.ru:8000/play.m3u&t=.m3u
     pos_slash     = indexOf(h_host, "/", 10); // position of "/" in hostname
-    pos_colon     = indexOf(h_host, ":", 10); if(isalpha(host[pos_colon + 1])) pos_colon = -1; // no portnumber follows
+    pos_colon     = indexOf(h_host, ":", 10); if(isalpha(c_host[pos_colon + 1])) pos_colon = -1; // no portnumber follows
     pos_ampersand = indexOf(h_host, "&", 10); // position of "&" in hostname
 
     if(pos_slash > 0) h_host[pos_slash] = '\0';
-
     if((pos_colon > 0) && ((pos_ampersand == -1) || (pos_ampersand > pos_colon))) {
-        port = atoi(host + pos_colon + 1);   // Get portnumber as integer
+        port = atoi(c_host + pos_colon + 1);   // Get portnumber as integer
         h_host[pos_colon] = '\0';
     }
-
     setDefaults();
     rqh = x_ps_calloc(lenHost + strlen(authorization) + 300, 1); // http request header
     if(!rqh) {AUDIO_INFO("out of memory"); stopSong(); goto exit;}
@@ -593,7 +585,7 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
     if(res) {
         uint32_t dt = millis() - timestamp;
         x_ps_free(&m_lastHost);
-        m_lastHost = x_ps_strdup(host);
+        m_lastHost = x_ps_strdup(c_host);
         AUDIO_INFO("%s has been established in %lu ms, free Heap: %lu bytes", m_f_ssl ? "SSL" : "Connection", (long unsigned int)dt, (long unsigned int)ESP.getFreeHeap());
         m_f_running = true;
         _client->print(rqh);
@@ -611,13 +603,13 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
         if(endsWith(h_host, ".pls" )) m_expectedPlsFmt = FORMAT_PLS;
         if(endsWith(h_host, ".m3u8")) {
             m_expectedPlsFmt = FORMAT_M3U8;
-            if(audio_lasthost) audio_lasthost(host);
+            if(audio_lasthost) audio_lasthost(m_lastHost);
         }
         m_dataMode = HTTP_RESPONSE_HEADER; // Handle header
         m_streamType = ST_WEBSTREAM;
     }
     else {
-        AUDIO_INFO("Request %s failed!", host);
+        AUDIO_INFO("Request %s failed!", c_host);
         m_f_running = false;
         if(audio_showstation) audio_showstation("");
         if(audio_showstreamtitle) audio_showstreamtitle("");
@@ -627,6 +619,7 @@ bool Audio::connecttohost(const char* host, const char* user, const char* pwd) {
 
 exit:
     xSemaphoreGiveRecursive(mutex_playAudioData);
+    x_ps_free(&c_host);
     x_ps_free(&h_host);
     x_ps_free(&rqh);
     x_ps_free(&toEncode);
@@ -1725,13 +1718,13 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
         // $03 – UTF-8 encoded Unicode, in ID3v2.4.
 
         if(startsWith(tag, "APIC")) { // a image embedded in file, passing it to external function
-        //    if(m_dataMode == AUDIO_LOCALFILE) {
+            if(m_dataMode == AUDIO_LOCALFILE) {
 #ifndef AUDIO_NO_SD_FS	
                 APIC_pos[numID3Header] = totalId3Size + id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = framesize;
                 //    log_e("APIC_pos %i APIC_size %i", APIC_pos[numID3Header], APIC_size[numID3Header]);
 #endif	// AUDIO_NO_SD_FS
-           // }
+            }
 
             return 0;
         }
@@ -2216,7 +2209,6 @@ int Audio::read_M4A_Header(uint8_t* data, size_t len) {
                 audiofile.seek(pos); // the filepointer could have been changed by the user, set it back
             #endif
         }
-
         m_controlCounter = M4A_OKAY; // that's all
         return 0;
     }
@@ -2430,8 +2422,9 @@ void Audio::loop() {
     if(m_playlistFormat != FORMAT_M3U8) { // normal process
         switch(m_dataMode) {
 #ifndef AUDIO_NO_SD_FS	
-            case AUDIO_LOCALFILE: processLocalFile(); break;
-#endif  // AUDIO_NO_SD_FS	
+            case AUDIO_LOCALFILE:
+                processLocalFile(); break;
+#endif  // AUDIO_NO_SD_FS                
             case HTTP_RESPONSE_HEADER:
                 static uint8_t count = 0;
                 if(!parseHttpResponseHeader()) {
@@ -2478,7 +2471,7 @@ void Audio::loop() {
                     m_dataMode = HTTP_RESPONSE_HEADER;
                 }
                 else { // host == NULL means connect to m3u8 URL
-                    if(m_lastM3U8host) {httpPrint(m_lastM3U8host);}
+                    if(m_lastM3U8host) {connecttohost(m_lastM3U8host);}
                     else               {httpPrint(m_lastHost);}      // if url has no first redirection
                     m_dataMode = HTTP_RESPONSE_HEADER;               // we have a new playlist now
                 }
@@ -2767,7 +2760,11 @@ const char* Audio::parsePlaylist_M3U8() {
                 ret = m3u8redirection(&codec);
                 if(ret) {
                     m_codec = codec; // can be AAC or MP3
-                    return ret;
+                    x_ps_free(&m_lastM3U8host);
+                    m_lastM3U8host = strdup(ret);
+                    x_ps_free_const(&ret);
+                    vector_clear_and_shrink(m_playlistContent);
+                    return NULL;
                 }
             }
             if(m_codec == CODEC_NONE) m_codec = CODEC_AAC; // if we have no redirection
@@ -3035,12 +3032,8 @@ const char* Audio::m3u8redirection(uint8_t* codec) {
     if(m_playlistContent[choosenLine]) {
         x_ps_free(&m_playlistContent[choosenLine]);
     }
-    m_playlistContent[choosenLine] = x_ps_strdup(tmp);
-    x_ps_free(&m_lastM3U8host); m_lastM3U8host = NULL;
-    m_lastM3U8host = x_ps_strdup(tmp);
-    x_ps_free(&tmp);
-    log_d("redirect to %s", m_playlistContent[choosenLine]);
-    return m_playlistContent[choosenLine]; // it's a redirection, a new m3u8 playlist
+
+    return tmp; // it's a redirection, a new m3u8 playlist
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 uint64_t Audio::m3u8_findMediaSeqInURL() { // We have no clue what the media sequence is
@@ -4789,6 +4782,20 @@ void Audio::printDecodeError(int r) {
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setPinout(uint8_t BCLK, uint8_t LRC, uint8_t DOUT, int8_t MCLK) {
 
+    m_f_psramFound = psramInit();
+
+    if(m_f_psramFound){ // shift mem in psram
+        m_chbufSize = 4096;
+        m_ibuffSize = 4096;
+        x_ps_free(&m_chbuf);
+        x_ps_free(&m_ibuff);
+        x_ps_free(&m_outBuff);
+        x_ps_free(&m_lastHost);
+        m_outBuff  = (int16_t*)x_ps_malloc(m_outbuffSize * sizeof(int16_t));
+        m_chbuf    = (char*)   x_ps_malloc(m_chbufSize);
+        m_ibuff    = (char*)   x_ps_malloc(m_ibuffSize);
+        if(!m_chbuf || !m_outBuff || !m_ibuff) log_e("oom");
+    }
     esp_err_t result = ESP_OK;
 
     if(m_f_internalDAC) {
@@ -4946,8 +4953,9 @@ bool Audio::setFilePos(uint32_t pos) {
 //        return true;
 //    }
     return false;
-#endif	
+#endif  // AUDIO_NO_SD_FS
 }
+
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::setSampleRate(uint32_t sampRate) {
     if(!sampRate) sampRate = 44100; // fuse, if there is no value -> set default #209
@@ -5152,9 +5160,6 @@ void Audio::setBalance(int8_t bal) { // bal -16...16
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 void Audio::setVolume(uint8_t vol, uint8_t curve) { // curve 0: default, curve 1: flat at the beginning
-
-    uint16_t v = ESP_ARDUINO_VERSION_MAJOR * 100 + ESP_ARDUINO_VERSION_MINOR * 10 + ESP_ARDUINO_VERSION_PATCH;
-    if(v < 207) AUDIO_INFO("Do not use this ancient Adruino version V%d.%d.%d", ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR, ESP_ARDUINO_VERSION_PATCH);
 
     if(vol > m_vol_steps) m_vol = m_vol_steps;
     else m_vol = vol;

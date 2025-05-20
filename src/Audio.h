@@ -2,11 +2,6 @@
 /*
  * Audio.h
  *
- *  Created on: Oct 28,2018
- *
- *  Version 3.1.0l
- *  Updated on: Mar 16.2025
- *      Author: Wolle (schreibfaul1)
  */
 
 #pragma once
@@ -43,7 +38,6 @@
 #ifndef I2S_GPIO_UNUSED
   #define I2S_GPIO_UNUSED -1 // = I2S_PIN_NO_CHANGE in IDF < 5
 #endif
-using namespace std;
 
 extern __attribute__((weak)) void audio_info(const char*);
 extern __attribute__((weak)) void audio_id3data(const char*); //ID3 metadata
@@ -125,7 +119,7 @@ protected:
     size_t            m_writeSpace       = 0;
     size_t            m_dataLength       = 0;
     size_t            m_resBuffSizeRAM   = 2048;     // reserved buffspace, >= one wav  frame
-    size_t            m_resBuffSizePSRAM = 4096 * 4; // reserved buffspace, >= one flac frame
+    size_t            m_resBuffSizePSRAM = 4096 * 6; // reserved buffspace, >= one flac frame
     size_t            m_maxBlockSize     = 1600;
     uint8_t*          m_buffer           = NULL;
     uint8_t*          m_writePtr         = NULL;
@@ -140,15 +134,16 @@ protected:
 static const size_t AUDIO_STACK_SIZE = 3300;
 static StaticTask_t __attribute__((unused)) xAudioTaskBuffer;
 static StackType_t  __attribute__((unused)) xAudioStack[AUDIO_STACK_SIZE];
+extern char audioI2SVers[];
 
 class Audio : private AudioBuffer{
 
     AudioBuffer InBuff; // instance of input buffer
 
 public:
-    Audio(bool internalDAC = false, uint8_t channelEnabled = 3, uint8_t i2sPort = I2S_NUM_0); // #99
+    Audio(uint8_t i2sPort = I2S_NUM_0);
     ~Audio();
-    bool openai_speech(const String& api_key, const String& model, const String& input, const String& voice, const String& response_format, const String& speed);
+    bool openai_speech(const String& api_key, const String& model, const String& input, const String& instructions, const String& voice, const String& response_format, const String& speed);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
     bool connecttospeech(const char* speech, const char* lang);
 #ifndef AUDIO_NO_SD_FS
@@ -191,6 +186,7 @@ public:
     void setI2SCommFMT_LSB(bool commFMT);
     int getCodec() {return m_codec;}
     const char *getCodecname() {return codecname[m_codec];}
+    const char *getVersion() {return audioI2SVers;}
 
 private:
 
@@ -205,6 +201,7 @@ private:
 
   void            UTF8toASCII(char* str);
   bool            latinToUTF8(char* buff, size_t bufflen, bool UTF8check = true);
+  void            htmlToUTF8(char* str);
   void            setDefaults(); // free buffers and set defaults
   void            initInBuff();
   bool            httpPrint(const char* host);
@@ -246,12 +243,13 @@ private:
   void            computeVUlevel(int16_t sample[2]);
   void            computeLimit();
   void            Gain(int16_t* sample);
-  void            showstreamtitle(const char* ml);
+  void            showstreamtitle(char* ml);
   bool            parseContentType(char* ct);
   bool            parseHttpResponseHeader();
   bool            initializeDecoder(uint8_t codec);
-  esp_err_t       I2Sstart(uint8_t i2s_num);
-  esp_err_t       I2Sstop(uint8_t i2s_num);
+  esp_err_t       I2Sstart();
+  esp_err_t       I2Sstop();
+  void            zeroI2Sbuff();
   void            IIR_filterChain0(int16_t iir_in[2], bool clear = false);
   void            IIR_filterChain1(int16_t iir_in[2], bool clear = false);
   void            IIR_filterChain2(int16_t iir_in[2], bool clear = false);
@@ -424,7 +422,7 @@ uint64_t bigEndian(uint8_t* base, uint8_t numBytes, uint8_t shiftLeft = 8) {
         return false;
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
-    void vector_clear_and_shrink(vector<char*>&vec){
+    void vector_clear_and_shrink(std::vector<char*>&vec){
         uint size = vec.size();
         for (int i = 0; i < size; i++) {
             if(vec[i]){
@@ -647,7 +645,7 @@ private:
     const size_t    m_frameSizeWav    = 4096;
     const size_t    m_frameSizeMP3    = 1600;
     const size_t    m_frameSizeAAC    = 1600;
-    const size_t    m_frameSizeFLAC   = 4096 * 4;
+    const size_t    m_frameSizeFLAC   = 4096 * 6; // 24576
     const size_t    m_frameSizeOPUS   = 1024;
     const size_t    m_frameSizeVORBIS = 4096 * 2;
     const size_t    m_outbuffSize     = 4096 * 2;
@@ -684,6 +682,7 @@ private:
     uint8_t         m_i2s_num = I2S_NUM_0;          // I2S_NUM_0 or I2S_NUM_1
     uint8_t         m_playlistFormat = 0;           // M3U, PLS, ASX
     uint8_t         m_codec = CODEC_NONE;           //
+    uint8_t         m_m3u8Codec = CODEC_AAC;        // codec of m3u8 stream
     uint8_t         m_expectedCodec = CODEC_NONE;   // set in connecttohost (e.g. http://url.mp3 -> CODEC_MP3)
     uint8_t         m_expectedPlsFmt = FORMAT_NONE; // set in connecttohost (e.g. streaming01.m3u) -> FORMAT_M3U)
     uint8_t         m_filterType[2];                // lowpass, highpass
@@ -734,11 +733,12 @@ private:
     bool            m_f_firstM3U8call = false;      // InitSequence for m3u8 parsing
     bool            m_f_ID3v1TagFound = false;      // ID3v1 tag found
     bool            m_f_chunked = false ;           // Station provides chunked transfer
+    bool            m_f_unknownFileLength = false;  // file length unknown
+    bool            m_f_clientIsConnected = false;  // client connected, inter task communication
     bool            m_f_firstmetabyte = false;      // True if first metabyte (counter)
     bool            m_f_playing = false;            // valid mp3 stream recognized
     bool            m_f_tts = false;                // text to speech
     bool            m_f_forceMono = false;          // if true stereo -> mono
-    bool            m_f_internalDAC = false;        // false: output vis I2S, true output via internal DAC
     bool            m_f_rtsp = false;               // set if RTSP is used (m3u8 stream)
     bool            m_f_m3u8data = false;           // used in processM3U8entries
     bool            m_f_Log = false;                // set in platformio.ini  -DAUDIO_LOG and -DCORE_DEBUG_LEVEL=3 or 4
@@ -755,6 +755,7 @@ private:
     bool            m_f_lockInBuffer = false;       // lock inBuffer for manipulation
     bool            m_f_audioTaskIsDecoding = false;
     bool            m_f_acceptRanges = false;
+    bool            m_f_reset_m3u8Codec = true;     // reset codec for m3u8 stream
     uint8_t         m_f_channelEnabled = 3;         //
     uint32_t        m_audioFileDuration = 0;
     float           m_audioCurrentTime = 0;

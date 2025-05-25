@@ -143,10 +143,10 @@ class Audio : private AudioBuffer{
 public:
     Audio(uint8_t i2sPort = I2S_NUM_0);
     ~Audio();
-    bool openai_speech(const String& api_key, const String& model, const String& input, const String& instructions, const String& voice, const String& response_format, const String& speed);
     bool connecttohost(const char* host, const char* user = "", const char* pwd = "");
-    bool connecttospeech(const char* speech, const char* lang);
 #ifndef AUDIO_NO_SD_FS
+    bool openai_speech(const String& api_key, const String& model, const String& input, const String& instructions, const String& voice, const String& response_format, const String& speed);
+    bool connecttospeech(const char* speech, const char* lang);
     bool connecttoFS(fs::FS &fs, const char* path, int32_t m_fileStartPos = -1);
 #endif
     void setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl);
@@ -199,14 +199,15 @@ private:
   enum : int8_t { AUDIOLOG_PATH_IS_NULL = -1, AUDIOLOG_FILE_NOT_FOUND = -2, AUDIOLOG_OUT_OF_MEMORY = -3, AUDIOLOG_FILE_READ_ERR = -4,
                   AUDIOLOG_M4A_ATOM_NOT_FOUND = -5,  AUDIOLOG_ERR_UNKNOWN = -127 };
 
-  void            UTF8toASCII(char* str);
   bool            latinToUTF8(char* buff, size_t bufflen, bool UTF8check = true);
   void            htmlToUTF8(char* str);
   void            setDefaults(); // free buffers and set defaults
   void            initInBuff();
   bool            httpPrint(const char* host);
   bool            httpRange(const char* host, uint32_t range);
+#ifndef AUDIO_NO_SD_FS
   void            processLocalFile();
+#endif
   void            processWebStream();
   void            processWebFile();
   void            processWebStreamTS();

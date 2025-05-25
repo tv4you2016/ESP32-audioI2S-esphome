@@ -3,7 +3,7 @@
     audio.cpp
 
     Created on: Oct 28.2018                                                                                                  */char audioI2SVers[] ="\
-    Version 3.2.0g                                                                                                                                  ";
+    Version 3.2.0h                                                                                                                                  ";
 /*  Updated on: May 24.2025
 
     Author: Wolle (schreibfaul1)
@@ -372,6 +372,7 @@ void Audio::setConnectionTimeout(uint16_t timeout_ms, uint16_t timeout_ms_ssl) {
 
     Usage: audio.openai_speech(OPENAI_API_KEY, "tts-1", input, instructions, "shimmer", "mp3", "1");
 */
+#ifndef AUDIO_NO_SD_FS
 bool Audio::openai_speech(const String& api_key, const String& model, const String& input, const String& instructions, const String& voice, const String& response_format, const String& speed) {
     char host[] = "api.openai.com";
     char path[] = "/v1/audio/speech";
@@ -449,7 +450,7 @@ bool Audio::openai_speech(const String& api_key, const String& model, const Stri
         + "User-Agent: nArija/1.0\r\n"
         + "Content-Type: application/json; charset=utf-8\r\n"
         + "Content-Length: " + post_body.length() + "\r\n"
-        + "Connection: keep-alive\r\n" + "\r\n"
+        + "Connection: close\r\n" + "\r\n"
         + post_body + "\r\n"
     ;
 
@@ -478,7 +479,6 @@ bool Audio::openai_speech(const String& api_key, const String& model, const Stri
         if (response_format == "aac") m_expectedCodec  = CODEC_AAC;
         if (response_format == "flac") m_expectedCodec  = CODEC_FLAC;
         m_dataMode = HTTP_RESPONSE_HEADER;
-        m_streamType = ST_WEBFILE;
     } else {
         AUDIO_INFO("Request %s failed!", host);
     //    x_ps_free(&m_lastHost);
@@ -486,7 +486,7 @@ bool Audio::openai_speech(const String& api_key, const String& model, const Stri
     xSemaphoreGiveRecursive(mutex_playAudioData);
     return res;
 }
-
+#endif
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttohost(const char* host, const char* user, const char* pwd) { // user and pwd for authentification only, can be empty
 
@@ -826,40 +826,7 @@ log_e("%s", rqh);
     return true;
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// clang-format off
-void Audio::UTF8toASCII(char* str) {
 
-    const uint8_t ascii[60] = {
-    //129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148  // UTF8(C3)
-    //                Ä    Å    Æ    Ç         É                                       Ñ                  // CHAR
-      000, 000, 000, 142, 143, 146, 128, 000, 144, 000, 000, 000, 000, 000, 000, 000, 165, 000, 000, 000, // ASCII
-    //149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168
-    //      Ö                             Ü              ß    à                   ä    å    æ         è
-      000, 153, 000, 000, 000, 000, 000, 154, 000, 000, 225, 133, 000, 000, 000, 132, 134, 145, 000, 138,
-    //169, 170, 171, 172. 173. 174. 175, 176, 177, 179, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188
-    //      ê    ë    ì         î    ï         ñ    ò         ô         ö              ù         û    ü
-      000, 136, 137, 141, 000, 140, 139, 000, 164, 149, 000, 147, 000, 148, 000, 000, 151, 000, 150, 129};
-
-    uint16_t i = 0, j = 0, s = 0;
-    bool     f_C3_seen = false;
-
-    while(str[i] != 0) {    // convert UTF8 to ASCII
-        if(str[i] == 195) { // C3
-            i++;
-            f_C3_seen = true;
-            continue;
-        }
-        str[j] = str[i];
-        if(str[j] > 128 && str[j] < 189 && f_C3_seen == true) {
-            s = ascii[str[j] - 129];
-            if(s != 0) str[j] = s; // found a related ASCII sign
-            f_C3_seen = false;
-        }
-        i++;
-        j++;
-    }
-    str[j] = 0;
-}
 #ifndef AUDIO_NO_SD_FS
 // clang-format on
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -908,7 +875,7 @@ exit:
     xSemaphoreGiveRecursive(mutex_playAudioData);
     return res;
 }
-#endif  // AUDIO_NO_SD_FS
+
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 bool Audio::connecttospeech(const char* speech, const char* lang) {
     xSemaphoreTakeRecursive(mutex_playAudioData, 0.3 * configTICK_RATE_HZ);
@@ -954,7 +921,6 @@ bool Audio::connecttospeech(const char* speech, const char* lang) {
     }
     _client->print(req);
 
-    m_streamType = ST_WEBFILE;
     m_f_running = true;
     m_f_ssl = false;
     m_f_tts = true;
@@ -964,6 +930,7 @@ bool Audio::connecttospeech(const char* speech, const char* lang) {
     xSemaphoreGiveRecursive(mutex_playAudioData);
     return true;
 }
+#endif  // AUDIO_NO_SD_FS
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 void Audio::showID3Tag(const char* tag, const char* value) {
     m_chbuf[0] = 0;
@@ -1456,7 +1423,9 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
     static size_t   headerSize;
     static size_t   retvalue = 0;
     static bool     f_lastMetaBlock = false;
+#ifndef AUDIO_NO_SD_FS  
     static uint32_t picPos = 0;
+#endif
     static uint32_t picLen = 0;
 
     if(retvalue) {
@@ -1477,7 +1446,9 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
         headerSize = 0;
         retvalue = 0;
         m_audioDataStart = 0;
+#ifndef AUDIO_NO_SD_FS 
         picPos = 0;
+#endif
         picLen = 0;
         f_lastMetaBlock = false;
         m_controlCounter = FLAC_MAGIC;
@@ -1647,7 +1618,9 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_controlCounter == FLAC_PICTURE) { /* PICTURE */
         picLen = bigEndian(data, 3);
+#ifndef AUDIO_NO_SD_FS 
         picPos = headerSize;
+#endif
         // log_w("FLAC PICTURE, size %i, pos %i", picLen, picPos);
         m_controlCounter = FLAC_MBH;
         retvalue = picLen + 3;
@@ -1668,6 +1641,9 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
     static char     frameid[5];
     static size_t   framesize = 0;
     static bool     compressed = false;
+    static char     value[256];
+    static size_t   dataLen = 0; // Declare dataLen here
+
 #ifndef AUDIO_NO_SD_FS
     static size_t   APIC_size[3] = {0};
     static uint32_t APIC_pos[3] = {0};
@@ -1917,7 +1893,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
         size_t dataLen = bigEndian(data + 3, 3);
         universal_tmp = dataLen;
         remainingHeaderBytes -= 3;
-        char value[256];
+        
         if(dataLen > 249) { dataLen = 249; }
         memcpy(value, (data + 7), dataLen);
         value[dataLen + 1] = 0;
@@ -1929,8 +1905,9 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
                 APIC_pos[numID3Header] = id3Size - remainingHeaderBytes;
                 APIC_size[numID3Header] = universal_tmp;
                 if(m_f_Log) log_i("Attached picture seen at pos %d length %d", APIC_pos[0], APIC_size[0]);
-#endif
+
             }
+#endif           
         }
         else if(startsWith(tag, "SLT")) { // lyrics embedded in header
             if(m_dataMode == AUDIO_LOCALFILE) {
@@ -3383,14 +3360,6 @@ exit:
         char* afn = NULL;
         if(audiofile) afn = strdup(audiofile.name()); // store temporary the name
         stopSong();
-
-        if(m_codec == CODEC_MP3) MP3Decoder_FreeBuffers();
-        if(m_codec == CODEC_AAC) AACDecoder_FreeBuffers();
-        if(m_codec == CODEC_M4A) AACDecoder_FreeBuffers();
-        if(m_codec == CODEC_FLAC) FLACDecoder_FreeBuffers();
-        if(m_codec == CODEC_OPUS) OPUSDecoder_FreeBuffers();
-        if(m_codec == CODEC_VORBIS) VORBISDecoder_FreeBuffers();
-
         m_audioCurrentTime = 0;
         m_audioFileDuration = 0;
         m_resumeFilePos = -1;
@@ -3412,7 +3381,9 @@ void Audio::processWebStream() {
 
     const uint16_t  maxFrameSize = InBuff.getMaxBlockSize(); // every mp3/aac frame is not bigger
     static uint32_t chunkSize;                               // chunkcount read from stream
-    static bool     f_firstChunk;
+    static bool     f_skipCRLF;
+    uint32_t        availableBytes = 0; // available from stream
+    bool            f_clientIsConnected = _client;           // if _client is Nullptr, we are not connected
 
     // first call, set some values to default  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_firstCall) { // runs only ont time per connection, prepare for start
@@ -3420,25 +3391,28 @@ void Audio::processWebStream() {
         m_f_stream = false;
         chunkSize = 0;
         m_metacount = m_metaint;
-        f_firstChunk = true;
+        f_skipCRLF = false;
+        m_f_allDataReceived = false;
         readMetadata(0, true); // reset all static vars
     }
-    uint32_t availableBytes = _client->available(); // available from stream
+    if(f_clientIsConnected) availableBytes = _client->available(); // available from stream
 
     // chunked data tramsfer - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_chunked && availableBytes) {
         uint8_t readedBytes = 0;
         if(!chunkSize){
-            if(!f_firstChunk){
+            if(f_skipCRLF){
                 int a =_client->read(); if(a != 0x0D) log_w("chunk count error, expected: 0x0D, received: 0x%02X", a); // skipCR
                 int b =_client->read(); if(b != 0x0A) log_w("chunk count error, expected: 0x0A, received: 0x%02X", b); // skipLF
+                f_skipCRLF = false;
             }
-            f_firstChunk = false;
-            chunkSize = readChunkSize(&readedBytes);
-            if(chunkSize == 0) {
-                ;
+            if(_client->available()){
+                chunkSize = readChunkSize(&readedBytes);
+                if(chunkSize > 0) {
+                    f_skipCRLF = true; // skip next CRLF
+                }
+                // log_w("chunk size: %d", chunkSize);
             }
-            // log_w("chunk size: %d", chunkSize);
         }
         availableBytes = min(availableBytes, chunkSize);
     }
@@ -3446,7 +3420,8 @@ void Audio::processWebStream() {
     // we have metadata  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_metadata && availableBytes) {
         if(m_metacount == 0) {
-            chunkSize -= readMetadata(availableBytes);
+            int metaLen = readMetadata(availableBytes);
+            chunkSize -= metaLen; // reduce chunkSize by metadata length
             return;
         }
         availableBytes = min(availableBytes, m_metacount);
@@ -3455,6 +3430,7 @@ void Audio::processWebStream() {
     // if the buffer is often almost empty issue a warning - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_stream) {
         if(streamDetection(availableBytes)) return;
+        if(!f_clientIsConnected) {if(!m_f_allDataReceived)  m_f_allDataReceived = true;} // connection closed
     }
 
     // buffer fill routine - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3480,6 +3456,13 @@ void Audio::processWebStream() {
         AUDIO_INFO("stream ready");
         m_f_stream = true;  // ready to play the audio data
     }
+
+    if(m_f_eof) {
+        AUDIO_INFO("End of webstream: \"%s\"", m_lastHost);
+        if(audio_eof_stream) audio_eof_stream(m_lastHost);
+        stopSong();
+    }
+
 }
 //------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 void Audio::processWebFile() {
@@ -3888,7 +3871,12 @@ void Audio::playAudioData() {
     bytesToDecode = min((int32_t)InBuff.getMaxBlockSize(), bytesToDecode);
 
     if(lastFrames){
-        bytesDecoded = sendBytes(InBuff.getReadPtr(), bytesToDecode);
+        bool f_skip = false;
+        switch(m_codec){
+            case CODEC_OPUS: if(bytesToDecode < InBuff.getMaxBlockSize()) {bytesDecoded = 0; f_skip = true;} break;
+            default: break;
+        }
+        if(!f_skip) bytesDecoded = sendBytes(InBuff.getReadPtr(), bytesToDecode);
     }
     else{
         if(InBuff.bufferFilled() >= InBuff.getMaxBlockSize()) bytesDecoded = sendBytes(InBuff.getReadPtr(), bytesToDecode);
@@ -4706,6 +4694,14 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     //                 < 0: there has been an error
 
     if(m_decodeError < 0) { // Error, skip the frame...
+        if((m_codec == CODEC_MP3) && (m_f_chunked == true)){ // http://bestof80s.stream.laut.fm/best_of_80s
+            if(specialIndexOf(data, "ID3", 4) == 0){
+                uint16_t  id3Size = bigEndian(data + 6, 4, 7);
+                id3Size += 10;
+                AUDIO_INFO("ID3 tag found, skip %i bytes", id3Size);
+                return id3Size; // skip ID3 tag
+            }
+        }
 
         printDecodeError(m_decodeError);
         m_f_playing = false; // seek for new syncword
@@ -4722,7 +4718,6 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
             if(m_decodeError == ERR_OPUS_INVALID_SAMPLERATE) stopSong();
             return 0;
         }
-
         return 1; // skip one byte and seek for the next sync word
     }
     bytesDecoded = len - bytesLeft;
@@ -5979,7 +5974,7 @@ size_t Audio::readChunkSize(uint8_t* bytes) {
             stopSong();
             return 0;
         }
-
+        if(!_client->available()) continue; // no data available yet
         b = _client->read();
         if (b < 0) continue; // -1 = no data
 

@@ -1982,6 +1982,7 @@ int Audio::read_ID3_Header(uint8_t* data, size_t len) {
                 audio_id3lyrics(audiofile, ID3Hdr.SYLT_pos, ID3Hdr.SYLT_size);
                 audiofile.seek(pos); // the filepointer could have been changed by the user, set it back
             }
+ #endif
             ID3Hdr.numID3Header = 0;
             ID3Hdr.totalId3Size = 0;
             for(int i = 0; i < 3; i++) ID3Hdr.APIC_pos[i] = 0;  // delete all

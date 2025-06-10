@@ -28,7 +28,7 @@ void setup() {
         Serial.println("Card Mount Failed");
         return;
     }
-    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, -1, 0);
     audio.setVolume(17); // 0...21 Will need to add a volume setting in the app
     dir = SD_MMC.open(audioDir);
     listDir(SD_MMC, audioDir, 1);
@@ -42,7 +42,6 @@ void setup() {
 
 void loop(){
     audio.loop();
-    vTaskDelay(1);    // Audio is distoreted without this
 }
 
 void listDir(fs::FS &fs, const char * dirname, uint8_t levels){

@@ -2,12 +2,12 @@
  * flac_decoder.h
  *
  * Created on: Jul 03,2020
- * Updated on: Mar 29,2025
+ * Updated on: May 21,2024
  *
  *      Author: wolle
  *
  *  Restrictions:
- *  blocksize must not exceed 24576 bytes
+ *  blocksize must not exceed 16342 bytes
  *  bits per sample must be 8 or 16
  *  num Channels must be 1 or 2
  *
@@ -21,8 +21,7 @@
 using namespace std;
 
 #define MAX_CHANNELS 2
-#define MAX_BLOCKSIZE 24576  // 24 * 1024
-#define MAX_OUTBUFFSIZE 4096 * 2
+#define MAX_BLOCKSIZE 8192
 
 enum : uint8_t {FLACDECODER_INIT, FLACDECODER_READ_IN, FLACDECODER_WRITE_OUT};
 enum : uint8_t {DECODE_FRAME, DECODE_SUBFRAMES, OUT_SAMPLES};
@@ -44,8 +43,7 @@ enum : int8_t  {FLAC_PARSE_OGG_DONE = 100,
                 ERR_FLAC_BITS_PER_SAMPLE_UNKNOWN = -11,
                 ERR_FLAC_DECODER_ASYNC = -12,
                 ERR_FLAC_UNIMPLEMENTED = -13,
-                ERR_FLAC_BITREADER_UNDERFLOW = -14,
-                ERR_FLAC_OUTBUFFER_TOO_SMALL = -15};
+                ERR_FLAC_BITREADER_UNDERFLOW = -14};
 
 typedef struct FLACMetadataBlock_t{
                               // METADATA_BLOCK_STREAMINFO
@@ -164,7 +162,7 @@ void             FLACDecoderReset();
 int8_t           FLACDecode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf);
 int8_t           FLACDecodeNative(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf);
 int8_t           flacDecodeFrame(uint8_t* inbuf, int32_t* bytesLeft);
-uint32_t         FLACGetOutputSamps();
+uint16_t         FLACGetOutputSamps();
 uint64_t         FLACGetTotoalSamplesInStream();
 uint8_t          FLACGetBitsPerSample();
 uint8_t          FLACGetChannels();

@@ -55,13 +55,12 @@ void setup() {
         Serial.println("Card Mount Failed");
         return;
     }
-    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, -1, -1);
     audio.setVolume(10); // 0...21
     audio.connecttoFS(SD_MMC, "/Little London Girl(lyrics).mp3");
 }
 
 void loop(){
-    vTaskDelay(1);
     audio.loop();
 }
 

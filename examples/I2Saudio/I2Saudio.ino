@@ -36,8 +36,7 @@ String password = "xxxxx";
 
 
 void setup() {
-    pinMode(SD_CS, OUTPUT);
-    digitalWrite(SD_CS, HIGH);
+    pinMode(SD_CS, OUTPUT);      digitalWrite(SD_CS, HIGH);
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
     SPI.setFrequency(1000000);
     Serial.begin(115200);
@@ -59,8 +58,8 @@ void setup() {
       audio.connecttohost("http://mp3.ffh.de/radioffh/hqlivestream.mp3"); //  128k mp3
 }
 
-void loop(){
-    vTaskDelay(1);
+void loop()
+{
     audio.loop();
     if(Serial.available()){ // put streamURL in serial monitor
         audio.stopSong();

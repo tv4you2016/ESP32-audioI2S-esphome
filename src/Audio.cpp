@@ -1499,11 +1499,13 @@ int Audio::read_FLAC_Header(uint8_t* data, size_t len) {
         m_audioDataStart = headerSize;
         m_audioDataSize = m_contentlength - m_audioDataStart;
         FLACSetRawBlockParams(m_flacNumChannels, m_flacSampleRate, m_flacBitsPerSample, m_flacTotalSamplesInStream, m_audioDataSize);
+#ifndef AUDIO_NO_SD_FS
         if(picLen) {
             size_t pos = audiofile.position();
             if(audio_id3image) audio_id3image(audiofile, picPos, picLen);
             audiofile.seek(pos); // the filepointer could have been changed by the user, set it back
         }
+#endif
         AUDIO_INFO("Audio-Length: %u", m_audioDataSize);
         retvalue = 0;
         return 0;
@@ -4841,7 +4843,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 // log_i("---------------------------------------------------------------------------");
                                 if(audio_oggimage) audio_oggimage(audiofile, vec);
                             }
-#endif
+#endif  // AUDIO_NO_SD_FS	
                             break;
         case CODEC_OPUS:    if(m_decodeError == OPUS_PARSE_OGG_DONE) return bytesDecoded; // nothing to play
                             if(m_decodeError == OPUS_END)            return bytesDecoded; // nothing to play
@@ -4868,6 +4870,7 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
                                 if(m_opus_mode == MODE_SILK_ONLY) AUDIO_INFO("Opus Mode: SILK_ONLY");
                                 if(m_opus_mode == MODE_NONE)      AUDIO_INFO("Opus Mode: NONE");
                             }
+#endif 
                             break;
 
         case CODEC_VORBIS:  if(m_decodeError == VORBIS_PARSE_OGG_DONE) return bytesDecoded; // nothing to play

@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <type_traits>
 
+#ifndef PS_PTR_CLASS
+#define PS_PTR_CLASS 1
+
 /** Auxiliary functions for using Unique Pointers in ESP32 PSRAM **/
 
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -50,6 +53,10 @@ public:
         }
     }
 
+    explicit operator bool() const {
+        return mem.get() != nullptr; // Or just 'return (bool) mem;'if unique_ptr :: operator bool () is used
+    }
+
     ps_ptr(ps_ptr&& other) noexcept { // move-constructor
         mem = std::move(other.mem);
         allocated_size = other.allocated_size;
@@ -88,8 +95,12 @@ public:
 
     void alloc(std::size_t size, const char* name = nullptr) {
         size = (size + 15) & ~15; // Align to 16 bytes
-        // mem.reset(ps_malloc(size));
-        mem.reset(static_cast<T*>(ps_malloc(size)));  // <--- Wichtig!
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            mem.reset(static_cast<T*>(ps_malloc(size)));  // <--- Important!
+        }
+        else{
+            mem.reset(static_cast<T*>(malloc(size)));  // <--- Important!
+        }
         allocated_size = size;
         if (!mem) {
             printf("OOM: failed to allocate %zu bytes for %s\n", size, name ? name : "unnamed");
@@ -98,7 +109,13 @@ public:
 
     void alloc(const char* name = nullptr) { // alloc for single objects/structures
         reset();  // Freigabe des zuvor gehaltenen Speichers
-        void* raw_mem = ps_malloc(sizeof(T)); // Allokiert im PSRAM
+        void* raw_mem = nullptr;
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            raw_mem = ps_malloc(sizeof(T)); // allocated im PSRAM
+        }
+        else{
+            raw_mem = malloc(sizeof(T)); // allocated im RAM
+        }
         if (raw_mem) {
             mem.reset(new (raw_mem) T()); // Platziertes New: Konstruktor von T wird im PSRAM aufgerufen
             allocated_size = sizeof(T);
@@ -107,24 +124,61 @@ public:
             allocated_size = 0; // Sicherstellen, dass allocated_size 0 ist, wenn Allokation fehlschlägt
         }
     }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  C A L L O C    📌📌📌
+    /**
+     * @brief Allocates and zeroes out memory for an array of elements.
+     * Chooses between PSRAM (if available) and DRAM.
+     * @param num_elements The number of elements to allocate space for.
+     * @param name Optional name for OOM messages.
+     */
+    void calloc(std::size_t num_elements, const char* name = nullptr) {
+        size_t total_size = num_elements * sizeof(T);
+        total_size = (total_size + 15) & ~15; // Align to 16 bytes, consistent with your alloc()
 
-    // void alloc(const char* name = nullptr) {
-    //     reset();
-    //     void* raw = ps_malloc(sizeof(T));
-    //     if (raw) {
-    //         mem.reset(new (raw) T()); // Platzierter Konstruktoraufruf
-    //         allocated_size = sizeof(T);
-    //     } else {
-    //         printf("OOM: failed to allocate %zu bytes for %s\n", sizeof(T), name ? name : "unnamed");
-    //     }
-    // }
+        reset(); // Release of the previously held memory
 
+        void* raw_mem = nullptr;
+
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            raw_mem = ps_malloc(total_size);
+        }
+        else {
+            raw_mem = malloc(total_size);
+        }
+
+        if (raw_mem) {
+            // Initialize memory with zeros how Calloc () does it
+            memset(raw_mem, 0, total_size);
+
+            // Connect the allocated memory to the Unique_PTR
+            mem.reset(static_cast<T*>(raw_mem));
+            allocated_size = total_size;
+        } else {
+            // Error treatment for storage allocation
+            printf("OOM: failed to calloc %zu bytes for %s\n", total_size, name ? name : "unnamed");
+            allocated_size = 0; // Sicherstellen, dass allocated_size 0 ist, wenn Allokation fehlschlägt
+        }
+    }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  A L L O C _ A R R A Y   📌📌📌
 
     void alloc_array(std::size_t count, const char* name = nullptr) {
         alloc(sizeof(T) * count, name);
         clear();
+    }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  Z E R O _ M E M  📌📌📌
+    /**
+     * @brief Sets the allocated memory block to all zeroes.
+     * Only operates if memory is currently allocated.
+     */
+    void zero_mem() {
+        if (mem) { // Check whether memory is assigned (use the new operator bool ())
+            // Use allocated_aize to zero the actual size of the assigned block.
+            // This is important because alloc() can also be called up with a specific size.
+            memset(mem.get(), 0, allocated_size);
+        }
     }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  R E A L L O C  📌📌📌
@@ -134,7 +188,13 @@ public:
     // printf("%s\n", test.get());
 
     void realloc(size_t new_size, const char* name = nullptr) {
-        void* new_mem = ps_malloc(new_size);
+        void* new_mem = nullptr;
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            new_mem = ps_malloc(new_size);
+        }
+        else{
+            new_mem = malloc(new_size);
+        }
         if (!new_mem) {
             printf("OOM: failed to realloc %zu bytes for %s\n", new_size, name ? name : "unnamed");
             return;
@@ -221,12 +281,6 @@ public:
         }
     }
 
-    void copy_from_cstr(const char* src, const char* name = nullptr) { // for strings
-        if (!src) return;
-        std::size_t len = std::strlen(src);
-        copy_from(src, len + 1, name);  // +1 für '\0'
-    }
-
     void copy_from(const T* src, const char* name = nullptr) {  // for strings
         if(src == nullptr){log_e("arg. is null"); return;}
         std::size_t count = std::strlen(src) + 1;
@@ -292,9 +346,12 @@ public:
         // Alten Speicher übernehmen
         char* old_data = static_cast<char*>(mem.release());
 
-        // Neu allokieren
-        // mem.reset(ps_malloc(new_len));
-        mem.reset(static_cast<T*>(ps_malloc(new_len)));  // <--- Wichtig!
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            mem.reset(static_cast<T*>(ps_malloc(new_len)));  // <--- Important!
+        }
+        else{
+            mem.reset(static_cast<T*>(malloc(new_len)));
+        }
         if (!mem) {
             printf("OOM: append() failed for %zu bytes\n", new_len);
             return;
@@ -327,7 +384,12 @@ public:
 
         char* old_data = static_cast<char*>(mem.release());
 
-        mem.reset(static_cast<T*>(ps_malloc(new_len)));
+        if (psramFound()) { // Check at the runtime whether PSRAM is available
+            mem.reset(static_cast<T*>(ps_malloc(new_len)));
+        }
+        else{
+            mem.reset(static_cast<T*>(malloc(new_len)));
+        }
         if (!mem) {
             printf("OOM: append(len) failed for %zu bytes\n", new_len);
             return;
@@ -475,8 +537,16 @@ public:
     //    👍 is equal
     // }
     bool equals(const ps_ptr<T>& other) const {
+        if(!this->valid() || !other.valid()) return false;
         if (!this->get() || !other.get()) return false;
         return strcmp(this->get(), other.get()) == 0;
+    }
+
+    bool equals(const char* other) const {
+        if (!this->valid()) return false;
+        const char* myStr = this->get();
+        if (!myStr || !other) return false;
+        return strcmp(myStr, other) == 0;
     }
 
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -528,6 +598,47 @@ public:
         // Formatierter Teil wird angehängt
         vsnprintf(static_cast<char*>(mem.get()) + old_len, new_len - old_len, fmt, args);
         va_end(args);
+    }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  A P P E N D F _ V A  📌📌📌
+
+    // void vPrint(const char* fmt, ...) {
+    //     ps_ptr<char> myLog;
+    //     va_list args;
+    //     va_start(args, fmt);
+    //     myLog.appendf_va(fmt, args);  // <-
+    //     va_end(args);
+    //     printf(myLog.c_get());
+    // }
+    // vPrint("Hallo %i", 19);
+
+    template <typename U = T>
+    requires std::is_same_v<U, char>
+    void appendf_va(const char* fmt, va_list args) {
+        if (!fmt) return;
+        // Formatlänge bestimmen (benötigt Kopie von args!)
+        va_list args_copy;
+        va_copy(args_copy, args);
+        int add_len = vsnprintf(nullptr, 0, fmt, args_copy);
+        va_end(args_copy);
+        if (add_len < 0) return;
+        std::size_t old_len = mem ? std::strlen(static_cast<char*>(mem.get())) : 0;
+        std::size_t new_len = old_len + static_cast<std::size_t>(add_len) + 1;
+        // Speicher neu reservieren
+        char* old_data = static_cast<char*>(mem.release());
+        reset(); alloc(new_len);
+        if (!mem) {
+            printf("OOM: appendf_va() failed for %zu bytes\n", new_len);
+            if (old_data) free(old_data);
+            return;
+        }
+        // Vorherigen Inhalt kopieren
+        if (old_data) {
+            std::memcpy(mem.get(), old_data, old_len);
+            free(old_data);
+        }
+        // Formatierung schreiben
+        vsnprintf(static_cast<char*>(mem.get()) + old_len, new_len - old_len, fmt, args);
     }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌 I N D E X _ O F   📌📌📌
@@ -797,6 +908,15 @@ public:
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  G E T   📌📌📌
     T* get() const { return static_cast<T*>(mem.get()); }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  C_G E T  (safe)   📌📌📌
+    const char* c_get(const char* fallback = "NA") const {
+        if constexpr (std::is_same_v<T, char>) {
+            return mem ? mem.get() : fallback;
+        } else {
+            return fallback;
+        }
+    }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  S E T   📌📌📌
 
@@ -1085,6 +1205,7 @@ public:
 
     void truncate_at(std::size_t pos) {
         if (!valid()) return;
+        if(pos >= strlen()) return;
         char* str = get();
         std::size_t len = std::strlen(str);
         if (pos < len) str[pos] = '\0';
@@ -1124,6 +1245,26 @@ public:
         }
     }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  R E M O V E _ B E F O R E   ( B Y   I N D E X )  📌📌📌
+    // t.assign("HelloWorld");
+    // t.remove_before(5);         // entfernt "Hello"
+    // t.remove_before(5, false);  // entfernt nur "Hell", das Zeichen an idx bleibt
+
+    void remove_before(int idx, bool includeIdx = true) {
+        if (!valid()) return;
+
+        char* str = get();
+        std::size_t len = std::strlen(str);
+
+        if (idx < 0 || static_cast<std::size_t>(idx) > len) return;
+
+        char* pos = str + idx;
+        if (!includeIdx && idx < len) ++pos; // wenn das Zeichen nicht entfernt werden soll
+
+        std::size_t remaining = std::strlen(pos);
+        std::memmove(str, pos, remaining + 1); // inkl. '\0'
+    }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  C O N T A I N S  📌📌📌
 
     // if (t.contains("xyz")) {
@@ -1132,6 +1273,27 @@ public:
 
     bool contains(const char* substr) const {
         return substr && this->valid() && std::strstr(this->get(), substr);
+    }
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  C O N T A I N S _ W I T H _ I C A S E    📌📌📌
+    bool contains_with_icase(const char* substr) const {
+        if (!substr || !this->valid()) {
+            return false;
+        }
+
+        const char* haystack = this->get();
+        const char* needle = substr;
+
+        // Wir kopieren den Text in temporäre lowercase-Strings
+        std::string haystack_lower(haystack);
+        std::string needle_lower(needle);
+
+        std::transform(haystack_lower.begin(), haystack_lower.end(), haystack_lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        std::transform(needle_lower.begin(), needle_lower.end(), needle_lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        return haystack_lower.find(needle_lower) != std::string::npos;
     }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  C L E A R   📌📌📌
@@ -1159,30 +1321,30 @@ public:
         allocated_size = 0;
     }
 };
+
+
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  S T R U C T U R E S    📌📌📌
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
-    // This declaration must be in the header or in the global area
-    // typedef struct _s {
-    //     int a[100];
-    //     char* b;
-    //     char* c;
-    // } myS;
-    // // Important macro to release the strings
-    // PS_STRUCT_FREE_MEMBERS(myS, ptr->b, ptr->c)
 
+    // typedef struct _hwoe{
+    //     bool ssl;
+    //     ps_ptr<char> hwoe;  // host without extension
+    //     uint16_t     port;
+    //     ps_ptr<char>extension[100];
+    //     ps_ptr<char> query_string;
+    // } hwoe_t;
+    // PS_STRUCT_FREE_MEMBERS(hwoe_t,
+    //     ptr->hwoe.reset();
+    //     for(int i = 0; i< 100; i++)ptr->extension[i].reset();
+    //     ptr->query_string.reset();
+    // )
 
-    // ps_struct_ptr<myS> mySt;
-    // mySt.alloc("myS");
-    // mySt->a[5] = 123;
-    // mySt.set_ptr_field(&mySt->b, "Hallo");
-    // mySt.set_ptr_field(&mySt->c, "Welt");
-
-    // printf("a[5]=%d, b=%s, c=%s\n", mySt->a[5], mySt->b, mySt->c);
-
-    // // Automatisch: b und c werden bei reset()/Destruktor freigegeben
-    // mySt.reset();
+    // ps_struct_ptr<hwoe_t> result;
+    // result.alloc();
+    // result->extension.copy_from(path
+    // .....
 
 template <typename T>
 class ps_struct_ptr {
@@ -1208,7 +1370,14 @@ public:
         }
         if (text) {
             std::size_t len = strlen(text) + 1;
-            char* p = static_cast<char*>(ps_malloc(len));
+
+            char* p = nullptr;
+            if (psramFound()) { // Check at the runtime whether PSRAM is available
+                p = static_cast<char*>(ps_malloc(len));
+            }
+            else{
+                p = static_cast<char*>(malloc(len));
+            }
             if (p) {
                 memcpy(p, text, len);
                 *field = p;
@@ -1284,3 +1453,336 @@ template <typename... Args>
 inline void free_fields(Args&... fields) {
     (free_field(fields), ...);
 }
+
+
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// 📌📌📌   2 D  A R R A Y   📌📌📌
+//
+// 2D Array in PSRAM with Bounds-Check, log_e and reset()
+//
+// Beispielaufruf:
+// ps_array2d<int32_t> s_samples; // Standardkonstruktor
+// s_samples.alloc(2, 1152);      // Speicher allozieren für [2][1152]
+//
+// int ch = 0; // Beispiel: Kanal 0
+//
+// // Deklaration von pcm1 als Zeiger auf das erste Element der Zeile (ähnlich wie bei samples[ch])
+// int32_t* pcm1;
+//
+// // Zuweisung:
+// pcm1 = s_samples.get_raw_row_ptr(ch);
+//
+// // Du kannst jetzt 'pcm1' verwenden, als wäre es ein int32_t-Array der Größe 1152
+// pcm1[0] = 42;
+// pcm1[1151] = 99;
+//
+// s_samples.reset(); // Speicher manuell freigeben
+//
+
+template <typename T>
+class ps_array2d
+{
+public:
+    // Standardkonstruktor: Initialisiert die Dimensionen auf 0.
+    ps_array2d() : m_dim1(0), m_dim2(0) {}
+
+    // Ursprünglicher Konstruktor: Alloziert Speicher direkt bei der Erstellung.
+    ps_array2d(size_t dim1, size_t dim2)
+        : m_dim1(dim1), m_dim2(dim2)
+    {
+        alloc_internal(dim1, dim2);
+    }
+
+    // Neue alloc-Methode: Ermöglicht die spätere Allokation des Speichers.
+    bool alloc(size_t dim1, size_t dim2) {
+        reset();
+        m_dim1 = dim1;
+        m_dim2 = dim2;
+        return alloc_internal(dim1, dim2);
+    }
+
+    // Überladung für `alloc` ohne Dimensionen, wenn die Dimensionen bereits gesetzt sind
+    bool alloc() {
+        if (m_dim1 == 0 || m_dim2 == 0) {
+            log_e("ps_array2d::alloc() called without dimensions or dimensions are zero.");
+            return false;
+        }
+        reset();
+        return alloc_internal(m_dim1, m_dim2);
+    }
+
+    // Klammer-Operator für den Zugriff auf einzelne Elemente (Bounds-Check inklusive)
+    T &operator()(size_t i, size_t j)
+    {
+        if (!m_data.valid()) {
+            log_e("ps_array2d: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return m_dummy;
+        }
+        if (i >= m_dim1 || j >= m_dim2) {
+            log_e("ps_array2d out-of-bounds: (%u,%u) but dims=(%u,%u) [line %d]",
+                  (unsigned)i, (unsigned)j, (unsigned)m_dim1, (unsigned)m_dim2, __LINE__);
+            return m_dummy;
+        }
+        return m_data[i * m_dim2 + j];
+    }
+
+    const T &operator()(size_t i, size_t j) const
+    {
+        if (!m_data.valid()) {
+            log_e("ps_array2d: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return m_dummy;
+        }
+        if (i >= m_dim1 || j >= m_dim2) {
+            log_e("ps_array2d out-of-bounds: (%u,%u) but dims=(%u,%u) [line %d]",
+                  (unsigned)i, (unsigned)j, (unsigned)m_dim1, (unsigned)m_dim2, __LINE__);
+            return m_dummy;
+        }
+        return m_data[i * m_dim2 + j];
+    }
+
+    // NEUE METHODE: Gibt einen rohen Zeiger (T*) auf den Beginn einer spezifischen Zeile (row_index) zurück.
+    // Dies ist ideal für deinen Fall 'pcm1 = samples[ch];'
+    T* get_raw_row_ptr(size_t row_index) {
+        if (!m_data.valid()) {
+            log_e("ps_array2d::get_raw_row_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (row_index >= m_dim1) {
+            log_e("ps_array2d::get_raw_row_ptr: row_index %u out-of-bounds (%u). [line %d]",
+                  (unsigned)row_index, (unsigned)m_dim1, __LINE__);
+            return nullptr;
+        }
+        return m_data.get() + row_index * m_dim2;
+    }
+
+    const T* get_raw_row_ptr(size_t row_index) const {
+        if (!m_data.valid()) {
+            log_e("ps_array2d::get_raw_row_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (row_index >= m_dim1) {
+            log_e("ps_array2d::get_raw_row_ptr: row_index %u out-of-bounds (%u). [line %d]",
+                  (unsigned)row_index, (unsigned)m_dim1, __LINE__);
+            return nullptr;
+        }
+        return m_data.get() + row_index * m_dim2;
+    }
+
+    // Gibt true zurück, wenn der Speicher erfolgreich alloziiert wurde
+    bool is_allocated() const { return m_data.valid(); }
+
+    size_t dim1() const { return m_dim1; }
+    size_t dim2() const { return m_dim2; }
+
+    // Manuelle Freigabe des Speichers
+    void reset() {
+        m_data.reset();
+        m_dim1 = 0;
+        m_dim2 = 0;
+    }
+
+private:
+    size_t m_dim1, m_dim2;
+    ps_ptr<T> m_data; // Verwaltet den linearen Speicherblock
+    static inline T m_dummy{};  // statischer Dummy-Wert
+
+    // Private Hilfsmethode für die eigentliche Allokationslogik
+    bool alloc_internal(size_t dim1, size_t dim2) {
+        if (dim1 == 0 || dim2 == 0) {
+            log_e("ps_array2d: Cannot allocate with zero dimensions. [line %d]", __LINE__);
+            return false;
+        }
+        size_t total_elements = dim1 * dim2;
+        m_data.calloc(total_elements, "ps_array2d_data");
+        if (!m_data.valid()) {
+            log_e("ps_array2d: Memory allocation failed for %u elements. [line %d]", (unsigned)total_elements, __LINE__);
+            m_dim1 = 0; m_dim2 = 0;
+            return false;
+        }
+        return true;
+    }
+};
+
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+// psram_unique_ptr.hpp (Auszug mit ps_array3d)
+//
+// 📌📌📌   3 D  A R R A Y   📌📌📌
+//
+// 3D Array in PSRAM with Bounds-Check, log_e and reset()
+//
+// Beispielaufruf:
+// ps_array3d<int32_t> s_sbsample;
+// s_sbsample.alloc(2, 36, 32);
+//
+// int ch = 0; // Beispiel für die erste Dimension
+// int gr = 0; // Beispiel für den Gruppen-Index
+//
+// // Deklaration des C-Stil-Zeigers auf ein 1D-Array [32]
+// int32_t (*sample)[32];
+//
+// // Zuweisung mithilfe der neuen Methode get_raw_row_ptr und dem passenden reinterpret_cast
+// sample = reinterpret_cast<int32_t(*)[32]>(s_sbsample.get_raw_row_ptr(ch, 18 * gr));
+//
+// // Jetzt kannst du 'sample' verwenden:
+// (*sample)[0] = 10;
+//
+// s_sbsample.reset();
+//
+
+
+template <typename T>
+class ps_array3d{
+public:
+    // Standardkonstruktor
+    ps_array3d() : m_dim1(0), m_dim2(0), m_dim3(0) {}
+
+    // Ursprünglicher Konstruktor
+    ps_array3d(size_t dim1, size_t dim2, size_t dim3)
+        : m_dim1(dim1), m_dim2(dim2), m_dim3(dim3)
+    {
+        alloc_internal(dim1, dim2, dim3);
+    }
+
+    // alloc-Methode
+    bool alloc(size_t dim1, size_t dim2, size_t dim3) {
+        reset();
+        m_dim1 = dim1;
+        m_dim2 = dim2;
+        m_dim3 = dim3;
+        return alloc_internal(dim1, dim2, dim3);
+    }
+
+    // Überladung für `alloc` ohne Dimensionen
+    bool alloc() {
+        if (m_dim1 == 0 || m_dim2 == 0 || m_dim3 == 0) {
+            log_e("ps_array3d::alloc() called without dimensions or dimensions are zero.");
+            return false;
+        }
+        reset();
+        return alloc_internal(m_dim1, m_dim2, m_dim3);
+    }
+
+    // Klammer-Operator für den Zugriff auf einzelne Elemente
+    T &operator()(size_t i, size_t j, size_t k)
+    {
+        if (!m_data.valid()) {
+            log_e("ps_array3d: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return m_dummy;
+        }
+        if (i >= m_dim1 || j >= m_dim2 || k >= m_dim3) {
+            log_e("ps_array3d out-of-bounds: (%u,%u,%u) but dims=(%u,%u,%u) [line %d]",
+                  (unsigned)i, (unsigned)j, (unsigned)k,
+                  (unsigned)m_dim1, (unsigned)m_dim2, (unsigned)m_dim3, __LINE__);
+            return m_dummy;
+        }
+        return m_data[i * (m_dim2 * m_dim3) + j * m_dim3 + k];
+    }
+
+    const T &operator()(size_t i, size_t j, size_t k) const
+    {
+        if (!m_data.valid()) {
+            log_e("ps_array3d: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return m_dummy;
+        }
+        if (i >= m_dim1 || j >= m_dim2 || k >= m_dim3) {
+            log_e("ps_array3d out-of-bounds: (%u,%u,%u) but dims=(%u,%u,%u) [line %d]",
+                  (unsigned)i, (unsigned)j, (unsigned)k,
+                  (unsigned)m_dim1, (unsigned)m_dim2, (unsigned)m_dim3, __LINE__);
+            return m_dummy;
+        }
+        return m_data[i * (m_dim2 * m_dim3) + j * m_dim3 + k];
+    }
+
+    // Methode zum Abrufen eines rohen Zeigers auf den Beginn eines 2D-Slices.
+    T* get_raw_slice_ptr(size_t i) {
+        if (!m_data.valid()) {
+            log_e("ps_array3d::get_raw_slice_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (i >= m_dim1) {
+            log_e("ps_array3d::get_raw_slice_ptr: dim1 index %u out-of-bounds (%u). [line %d]", (unsigned)i, (unsigned)m_dim1, __LINE__);
+            return nullptr;
+        }
+        return m_data.get() + i * (m_dim2 * m_dim3);
+    }
+
+    const T* get_raw_slice_ptr(size_t i) const {
+        if (!m_data.valid()) {
+            log_e("ps_array3d::get_raw_slice_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (i >= m_dim1) {
+            log_e("ps_array3d::get_raw_slice_ptr: dim1 index %u out-of-bounds (%u). [line %d]", (unsigned)i, (unsigned)m_dim1, __LINE__);
+            return nullptr;
+        }
+        return m_data.get() + i * (m_dim2 * m_dim3);
+    }
+
+    // NEUE METHODE: Gibt einen rohen Zeiger (T*) auf den Beginn einer spezifischen Zeile (dim2_idx)
+    // innerhalb eines spezifischen Slices (dim1_idx) zurück.
+    T* get_raw_row_ptr(size_t dim1_idx, size_t dim2_idx) {
+        if (!m_data.valid()) {
+            log_e("ps_array3d::get_raw_row_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (dim1_idx >= m_dim1 || dim2_idx >= m_dim2) {
+            log_e("ps_array3d::get_raw_row_ptr: Indices (%u,%u) out-of-bounds for dims=(%u,%u) [line %d]",
+                  (unsigned)dim1_idx, (unsigned)dim2_idx, (unsigned)m_dim1, (unsigned)m_dim2, __LINE__);
+            return nullptr;
+        }
+        // Berechne den Offset für die spezifische Zeile im linearen Speicher
+        return m_data.get() + (dim1_idx * (m_dim2 * m_dim3)) + (dim2_idx * m_dim3);
+    }
+
+    const T* get_raw_row_ptr(size_t dim1_idx, size_t dim2_idx) const {
+        if (!m_data.valid()) {
+            log_e("ps_array3d::get_raw_row_ptr: Access on unallocated memory. Call alloc() first. [line %d]", __LINE__);
+            return nullptr;
+        }
+        if (dim1_idx >= m_dim1 || dim2_idx >= m_dim2) {
+            log_e("ps_array3d::get_raw_row_ptr: Indices (%u,%u) out-of-bounds for dims=(%u,%u) [line %d]",
+                  (unsigned)dim1_idx, (unsigned)dim2_idx, (unsigned)m_dim1, (unsigned)m_dim2, __LINE__);
+            return nullptr;
+        }
+        return m_data.get() + (dim1_idx * (m_dim2 * m_dim3)) + (dim2_idx * m_dim3);
+    }
+
+
+    // Gibt true zurück, wenn der Speicher erfolgreich alloziiert wurde
+    bool is_allocated() const { return m_data.valid(); }
+
+    size_t dim1() const { return m_dim1; }
+    size_t dim2() const { return m_dim2; }
+    size_t dim3() const { return m_dim3; }
+
+    // Manuelle Freigabe des Speichers
+    void reset() {
+        m_data.reset();
+        m_dim1 = 0;
+        m_dim2 = 0;
+        m_dim3 = 0;
+    }
+
+private:
+    size_t m_dim1, m_dim2, m_dim3;
+    ps_ptr<T> m_data; // Verwaltet den linearen Speicherblock
+    static inline T m_dummy{}; // Dummy-Wert für Fehlerfälle
+
+    // Private Hilfsmethode für die eigentliche Allokationslogik
+    bool alloc_internal(size_t dim1, size_t dim2, size_t dim3) {
+        if (dim1 == 0 || dim2 == 0 || dim3 == 0) {
+            log_e("ps_array3d: Cannot allocate with zero dimensions. [line %d]", __LINE__);
+            return false;
+        }
+        size_t total_elements = dim1 * dim2 * dim3;
+        m_data.calloc(total_elements, "ps_array3d_data");
+        if (!m_data.valid()) {
+            log_e("ps_array3d: Memory allocation failed for %u elements. [line %d]", (unsigned)total_elements, __LINE__);
+            m_dim1 = 0; m_dim2 = 0; m_dim3 = 0;
+            return false;
+        }
+        return true;
+    }
+};
+
+#endif

@@ -5088,7 +5088,9 @@ void Audio::computeAudioTime(uint16_t bytesDecoderIn, uint16_t bytesDecoderOut) 
         if(m_cat.syltIdx >= m_syltLines.size()) return;
         if(audioCurrentTime * 1000 > m_syltTimeStamp[m_cat.syltIdx]){
         //  AUDIO_INFO(ANSI_ESC_CYAN "%s", m_syltLines[m_cat.syltIdx].c_get());
+#ifndef AUDIO_NO_SD_FS        
             if(audio_id3lyrics) audio_id3lyrics(m_syltLines[m_cat.syltIdx].c_get());
+#endif
             m_cat.syltIdx++;
         }
     }

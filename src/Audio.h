@@ -12,6 +12,7 @@
 #pragma GCC optimize ("Ofast")
 #include "esp_arduino_version.h"
 #include <vector>
+#include <deque>
 #include <Arduino.h>
 #include <libb64/cencode.h>
 #include <esp32-hal-log.h>
@@ -141,11 +142,23 @@ private:
         uint8_t      content_type;
     } sylt_t;
     typedef struct _ID3Hdr{ // used only in readID3header()
+        size_t       retvalue;
+        size_t       headerSize;
+        size_t       tagSize;
+        size_t       cnt;
         size_t       id3Size;
         size_t       totalId3Size; // if we have more header, id3_1_size + id3_2_size + ....
         size_t       remainingHeaderBytes;
         size_t       universal_tmp;
         uint8_t      ID3version;
+        uint8_t      ID3revision;
+        uint8_t      flags;
+        bool         unsync;
+        bool         extended_header;
+        bool         experimental_indicator;
+        bool         footer_present;
+        size_t       offset;
+        size_t       currentPosition;
         int          ehsz;
         char         tag[5];
         char         frameid[5];
@@ -313,8 +326,9 @@ private:
     pwst_t m_pwst;
 
     typedef struct _gchs{ // used in getChunkSize
-        bool      f_skipCRLF = false;
-
+        bool f_skipCRLF;
+        bool isHttpChunked;
+        size_t transportLimit;
     } gchs_t;
     gchs_t m_gchs;
 
@@ -489,8 +503,9 @@ private:
     const char*  parsePlaylist_PLS();
     const char*  parsePlaylist_ASX();
     ps_ptr<char> parsePlaylist_M3U8();
+    uint16_t     accomplish_m3u8_url();
+    int16_t      prepare_first_m3u8_url(ps_ptr<char>& playlistBuff);
     ps_ptr<char> m3u8redirection(uint8_t* codec);
-    bool         m3u8_findMediaSeqInURL(std::vector<ps_ptr<char>>& linesWithSeqNrAndURL, uint64_t* mediaSeqNr);
     void         showCodecParams();
     int          findNextSync(uint8_t* data, size_t len);
     uint32_t     decodeError(int8_t res, uint8_t* data, int32_t bytesDecoded);
@@ -503,6 +518,7 @@ private:
     int          read_WAV_Header(uint8_t* data, size_t len);
     int          read_FLAC_Header(uint8_t* data, size_t len);
     int          read_ID3_Header(uint8_t* data, size_t len);
+    int          read_ID3_Header_new(uint8_t* data, size_t len);
     int          read_M4A_Header(uint8_t* data, size_t len);
     size_t       process_m3u8_ID3_Header(uint8_t* packet);
     bool         setSampleRate(uint32_t hz);
@@ -544,7 +560,6 @@ private:
     //+++ H E L P   F U N C T I O N S +++
     uint16_t     readMetadata(uint16_t b, bool first = false);
     int32_t      getChunkSize(uint8_t *readedBytes, bool first = false);
-    size_t       readChunkSize(uint8_t* bytes);
     bool         readID3V1Tag();
     int32_t      newInBuffStart(int32_t m_resumeFilePos);
     boolean      streamDetection(uint32_t bytesAvail);
@@ -707,6 +722,12 @@ private:
         vec.shrink_to_fit();    // put back memory
     }
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    void deque_clear_and_shrink(std::deque<ps_ptr<char>>& deq){
+        for(int i = 0; i< deq.size(); i++) deq[i].reset();
+        deq.clear();            // unique_ptr takes care of free()
+        deq.shrink_to_fit();    // put back memory
+    }
+//——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     uint32_t simpleHash(const char* str){
         if(str == NULL) return 0;
         uint32_t hash = 0;
@@ -796,12 +817,13 @@ private:
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
 private:
-    const char *codecname[10] = {"unknown", "WAV", "MP3", "AAC", "M4A", "FLAC", "AACP", "OPUS", "OGG", "VORBIS" };
     enum : int { APLL_AUTO = -1, APLL_ENABLE = 1, APLL_DISABLE = 0 };
     enum : int { EXTERNAL_I2S = 0, INTERNAL_DAC = 1, INTERNAL_PDM = 2 };
     enum : int { FORMAT_NONE = 0, FORMAT_M3U = 1, FORMAT_PLS = 2, FORMAT_ASX = 3, FORMAT_M3U8 = 4}; // playlist formats
+    const char* plsFmtStr[5] = {"NONE", "M3U", "PLS", "ASX", "M3U8"}; // playlist format string
     enum : int { AUDIO_NONE, HTTP_RESPONSE_HEADER, HTTP_RANGE_HEADER, AUDIO_DATA, AUDIO_LOCALFILE,
-                 AUDIO_PLAYLISTINIT, AUDIO_PLAYLISTHEADER,  AUDIO_PLAYLISTDATA};
+                 AUDIO_PLAYLISTINIT, AUDIO_PLAYLISTHEADER, AUDIO_PLAYLISTDATA};
+    const char* dataModeStr[8] = {"AUDIO_NONE", "HTTP_RESPONSE_HEADER", "HTTP_RANGE_HEADER", "AUDIO_DATA", "AUDIO_LOCALFILE", "AUDIO_PLAYLISTINIT", "AUDIO_PLAYLISTHEADER", "AUDIO_PLAYLISTDATA" };
     enum : int { FLAC_BEGIN = 0, FLAC_MAGIC = 1, FLAC_MBH =2, FLAC_SINFO = 3, FLAC_PADDING = 4, FLAC_APP = 5,
                  FLAC_SEEK = 6, FLAC_VORBIS = 7, FLAC_CUESHEET = 8, FLAC_PICTURE = 9, FLAC_OKAY = 100};
     enum : int { M4A_BEGIN = 0, M4A_FTYP = 1, M4A_CHK = 2, M4A_MOOV = 3, M4A_FREE = 4, M4A_TRAK = 5, M4A_MDAT = 6,
@@ -809,7 +831,9 @@ private:
                  M4A_STSZ = 15, M4A_META = 16,  M4A_AMRDY = 99, M4A_OKAY = 100};
     enum : int { CODEC_NONE = 0, CODEC_WAV = 1, CODEC_MP3 = 2, CODEC_AAC = 3, CODEC_M4A = 4, CODEC_FLAC = 5,
                  CODEC_AACP = 6, CODEC_OPUS = 7, CODEC_OGG = 8, CODEC_VORBIS = 9};
+    const char *codecname[10] = {"unknown", "WAV", "MP3", "AAC", "M4A", "FLAC", "AACP", "OPUS", "OGG", "VORBIS" };
     enum : int { ST_NONE = 0, ST_WEBFILE = 1, ST_WEBSTREAM = 2};
+    const char* streamTypeStr[3] = {"NONE", "WEBFILE", "WEBSTREAM"};
     typedef enum { LEFTCHANNEL=0, RIGHTCHANNEL=1 } SampleIndex;
     typedef enum { LOWSHELF = 0, PEAKEQ = 1, HIFGSHELF =2 } FilterType;
 
@@ -852,7 +876,7 @@ private:
 
     std::vector<ps_ptr<char>> m_playlistContent;        // m3u8 playlist buffer from responseHeader
     std::vector<ps_ptr<char>> m_playlistURL;            // m3u8 streamURLs buffer
-    std::vector<ps_ptr<char>> m_linesWithSeqNrAndURL;   // extract from m_playlistContent, contains URL and MediaSequenceNumber
+    std::deque <ps_ptr<char>> m_linesWithURL;   // extract from m_playlistContent, contains URL and MediaSequenceNumber
     std::vector<ps_ptr<char>> m_linesWithEXTINF;        // extract from m_playlistContent, contains length and metadata
     std::vector<ps_ptr<char>> m_syltLines;              // SYLT line table
     std::vector<uint32_t>     m_syltTimeStamp;          // SYLT time table
@@ -878,6 +902,7 @@ private:
     ps_ptr<char>     m_lastM3U8host;
     ps_ptr<char>     m_speechtxt;                   // stores tts text
     ps_ptr<char>     m_streamTitle;                 // stores the last StreamTitle
+    ps_ptr<char>     m_playlistBuff;
 
 
     filter_t        m_filter[3];                    // digital filters

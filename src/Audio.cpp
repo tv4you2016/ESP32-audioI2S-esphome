@@ -2948,10 +2948,12 @@ uint32_t Audio::stopSong() {
                 info(evt_info, "Closing web file \"%s\"", m_lastHost.c_get());
                 m_client->stop();
             }
+#ifndef AUDIO_NO_SD_FS   
             if(m_audiofile) {
                 info(evt_info, "Closing audio file \"%s\"", m_audiofile.name());
                 m_audiofile.close();
             }
+#endif
         }
         memset(m_filterBuff, 0, sizeof(m_filterBuff)); // Clear FilterBuffer
         if(m_codec == CODEC_MP3) MP3Decoder_FreeBuffers();
@@ -5571,10 +5573,13 @@ int32_t Audio::audioFileRead(uint8_t* buff, size_t len){
     else { // read len
         uint32_t t = millis();
         while(len > 0){
+         
             if(m_dataMode == AUDIO_LOCALFILE){
+#ifndef AUDIO_NO_SD_FS   
                 readed_bytes = m_audiofile.read(buff + offset, len);
                 if(readed_bytes >= 0) {m_audioFilePosition += readed_bytes; len -= readed_bytes; offset += readed_bytes; res = offset; t = millis();}
                 if(readed_bytes <= 0) break;
+#endif
             }
             else{
                 readed_bytes = m_client->read(buff + offset, len);

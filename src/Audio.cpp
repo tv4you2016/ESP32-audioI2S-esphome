@@ -4,8 +4,8 @@
 
     Created on: 28.10.2018                                                                                                  */
 char audioI2SVers[] = "\
-    Version 3.4.3k                                                                                                                              ";
-/*  Updated on: 24.10.2025
+    Version 3.4.3m                                                                                                                              ";
+/*  Updated on: 26.10.2025
 
     Author: Wolle (schreibfaul1)
     Audio library for ESP32, ESP32-S3 or ESP32-P4
@@ -19,6 +19,8 @@ char audioI2SVers[] = "\
 #include "aac_decoder/aac_decoder.h"
 #include "flac_decoder/flac_decoder.h"
 #include "mp3_decoder/mp3_decoder.h"
+#include "mp3_decoder/mp3_decoder_wrapper.h"
+
 #include "opus_decoder/opus_decoder.h"
 #include "psram_unique_ptr.hpp"
 #include "vorbis_decoder/vorbis_decoder.h"
@@ -29,7 +31,7 @@ constexpr size_t m_frameSizeWav = 2048;
 constexpr size_t m_frameSizeMP3 = 1600 * 2;
 constexpr size_t m_frameSizeAAC = 1600 * 2;
 constexpr size_t m_frameSizeFLAC = 4096 * 6; // 24576
-constexpr size_t m_frameSizeOPUS = UINT16_MAX;
+constexpr size_t m_frameSizeOPUS = UINT16_MAX;   // max ogg size
 constexpr size_t m_frameSizeVORBIS = UINT16_MAX; // OGG length is normally 4080 bytes, but can be reach 64KB in the metadata block
 constexpr size_t m_outbuffSize = 4608 * 2;
 constexpr size_t m_samplesBuff48KSize = m_outbuffSize * 8; // 131072KB  SRmin: 6KHz -> SRmax: 48K
@@ -3979,7 +3981,7 @@ void Audio::processWebStream() {
     }
 
     // start audio decoding - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    if (InBuff.bufferFilled() > m_pwst.maxFrameSize * 2 && !m_f_stream) { // waiting for buffer filled
+    if (InBuff.bufferFilled() > m_pwst.maxFrameSize && !m_f_stream) { // waiting for buffer filled
         info(*this, evt_info, "stream ready");
         m_f_stream = true; // ready to play the audio data
     }
@@ -4816,7 +4818,6 @@ bool Audio::initializeDecoder() {
         case CODEC_VORBIS:
             type = "VORBIS";
             InBuff.changeMaxBlockSize(m_frameSizeVORBIS);
-            AUDIO_LOG_ERROR("bs %i", InBuff.getMaxBlockSize());
             break;
         case CODEC_WAV:
             type = "WAV";

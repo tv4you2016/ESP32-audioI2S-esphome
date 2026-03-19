@@ -3,41 +3,88 @@
  * libhelix_HMP3DECODER
  *
  *  Created on: 26.10.2018
- *  Updated on: 09.07.2025
+ *  Updated on: 14.02.2026
  */
 #include "mp3_decoder.h"
 
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
+bool MP3Decoder::init() {
+    m_MP3DecInfo.alloc("m_MP3DecInfo");
+    m_FrameHeader.alloc("m_FrameHeader");
+    m_SideInfo.alloc("m_SideInfo");
+    m_ScaleFactorJS.alloc("m_ScaleFactorJS");
+    m_HuffmanInfo.alloc("m_HuffmanInfo");
+    m_DequantInfo.alloc("m_DequantInfo");
+    m_IMDCTInfo.alloc("m_IMDCTInfo");
+    m_SubbandInfo.alloc("m_SubbandInfo");
+    m_MP3FrameInfo.alloc("m_MP3FrameInfo");
+    m_out16.alloc_array(4608 * 2, "m_out16");
 
-MP3FrameInfo_t*      m_MP3FrameInfo;
-SFBandTable_t        m_SFBandTable;
-StereoMode_t         m_sMode;       /* mono/stereo mode */
-MPEGVersion_t        m_MPEGVersion; /* version ID */
-FrameHeader_t*       m_FrameHeader;
-SideInfoSub_t        m_SideInfoSub[MAX_NGRAN][MAX_NCHAN];
-SideInfo_t*          m_SideInfo;
-CriticalBandInfo_t   m_CriticalBandInfo[MAX_NCHAN]; /* filled in dequantizer, used in joint stereo reconstruction */
-DequantInfo_t*       m_DequantInfo;
-HuffmanInfo_t*       m_HuffmanInfo;
-IMDCTInfo_t*         m_IMDCTInfo;
-ScaleFactorInfoSub_t m_ScaleFactorInfoSub[MAX_NGRAN][MAX_NCHAN];
-ScaleFactorJS_t*     m_ScaleFactorJS;
-SubbandInfo_t*       m_SubbandInfo;
-MP3DecInfo_t*        m_MP3DecInfo;
+    if (!m_MP3DecInfo.valid() || !m_FrameHeader.valid() || !m_SideInfo.valid() || !m_ScaleFactorJS.valid() || !m_HuffmanInfo.valid() || !m_DequantInfo.valid() || !m_IMDCTInfo.valid() ||
+        !m_SubbandInfo.valid() || !m_MP3FrameInfo.valid() || !m_out16.valid()) {
+        reset();
+        MP3_LOG_ERROR("not enough memory to allocate mp3decoder buffers");
+        return false;
+    }
+    clear();
+    return true;
+}
 
-/***********************************************************************************************************************
- * B I T S T R E A M
- **********************************************************************************************************************/
-
-void SetBitstreamPointer(BitStreamInfo_t* bsi, int32_t nBytes, uint8_t* buf) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::reset() {
+    m_MP3DecInfo.reset();
+    m_FrameHeader.reset();
+    m_SideInfo.reset();
+    m_ScaleFactorJS.reset();
+    m_HuffmanInfo.reset();
+    m_DequantInfo.reset();
+    m_IMDCTInfo.reset();
+    m_SubbandInfo.reset();
+    m_MP3FrameInfo.reset();
+    m_mpeg_version_str.reset();
+    m_out16.reset();
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::clear() {
+    /* important to do this - DSP primitives assume a bunch of state variables are 0 on first use */
+    m_MP3DecInfo.clear();
+    m_FrameHeader.clear();
+    m_SideInfo.clear();
+    m_ScaleFactorJS.clear();
+    m_HuffmanInfo.clear();
+    m_DequantInfo.clear();
+    m_IMDCTInfo.clear();
+    m_SubbandInfo.clear();
+    m_MP3FrameInfo.clear();
+    m_mpeg_version_str.clear();
+    m_out16.clear();
+    memset(&m_SFBandTable, 0, sizeof(SFBandTable_t));                                         // Clear SFBandTable
+    memset(&m_ScaleFactorInfoSub, 0, sizeof(ScaleFactorInfoSub_t) * (MAX_NGRAN * MAX_NCHAN)); // Clear ScaleFactorInfo
+    memset(&m_CriticalBandInfo, 0, sizeof(CriticalBandInfo_t) * MAX_NCHAN);                   // Clear CriticalBandInfo
+    memset(&m_SideInfoSub, 0, sizeof(SideInfoSub_t) * (MAX_NGRAN * MAX_NCHAN));               // Clear SideInfoSub
+    return;
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+bool MP3Decoder::isValid() {
+    if (!m_MP3DecInfo.valid() || !m_FrameHeader.valid() || !m_SideInfo.valid() || !m_ScaleFactorJS.valid() || !m_HuffmanInfo.valid() || !m_DequantInfo.valid() || !m_IMDCTInfo.valid() ||
+        !m_SubbandInfo.valid() || !m_MP3FrameInfo.valid() || !m_out16.valid()) {
+        return false;
+    }
+    return true;
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/* B I T S T R E A M */
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::SetBitstreamPointer(BitStreamInfo_t* bsi, int32_t nBytes, uint8_t* buf) {
     /* init bitstream */
     bsi->bytePtr = buf;
     bsi->iCache = 0;     /* 4-byte uint32_t */
     bsi->cachedBits = 0; /* i.e. zero bits in cache */
     bsi->nBytes = nBytes;
 }
-//----------------------------------------------------------------------------------------------------------------------
-void RefillBitstreamCache(BitStreamInfo_t* bsi) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::RefillBitstreamCache(BitStreamInfo_t* bsi) {
     int32_t nBytes = bsi->nBytes;
     /* optimize for common case, independent of machine endian-ness */
     if (nBytes >= 4) {
@@ -58,11 +105,11 @@ void RefillBitstreamCache(BitStreamInfo_t* bsi) {
         bsi->nBytes = 0;
     }
 }
-//----------------------------------------------------------------------------------------------------------------------
-uint32_t GetBits(BitStreamInfo_t* bsi, int32_t nBits) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::GetBits(BitStreamInfo_t* bsi, int32_t nBits) {
     uint32_t data, lowBits;
 
-    nBits &= 0x1f;                      /* nBits mod 32 to avoid unpredictable results like >> by negative amount */
+    nBits &= 0x1f;                      /* nBits mod 32 to avoid MP3Decoder::  unpredictable results like >> by negative amount */
     data = bsi->iCache >> (31 - nBits); /* unsigned >> so zero-extend */
     data >>= 1;                         /* do as >> 31, >> 1 so that nBits = 0 works okay (returns 0) */
     bsi->iCache <<= nBits;              /* left-justify cache */
@@ -76,20 +123,20 @@ uint32_t GetBits(BitStreamInfo_t* bsi, int32_t nBits) {
     }
     return data;
 }
-//----------------------------------------------------------------------------------------------------------------------
-int32_t CalcBitsUsed(BitStreamInfo_t* bsi, uint8_t* startBuf, int32_t startOffset) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::CalcBitsUsed(BitStreamInfo_t* bsi, uint8_t* startBuf, int32_t startOffset) {
     int32_t bitsUsed;
     bitsUsed = (bsi->bytePtr - startBuf) * 8;
     bitsUsed -= bsi->cachedBits;
     bitsUsed -= startOffset;
     return bitsUsed;
 }
-//----------------------------------------------------------------------------------------------------------------------
-int32_t CheckPadBit() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::CheckPadBit() {
     return (m_FrameHeader->paddingBit ? 1 : 0);
 }
-//----------------------------------------------------------------------------------------------------------------------
-int32_t UnpackFrameHeader(uint8_t* buf) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::UnpackFrameHeader(uint8_t* buf) {
     int32_t verIdx;
     /* validate pointers and sync word */
     if ((buf[0] & SYNCWORDH) != SYNCWORDH || (buf[1] & SYNCWORDL) != SYNCWORDL) { return -1; }
@@ -107,7 +154,7 @@ int32_t UnpackFrameHeader(uint8_t* buf) {
     m_FrameHeader->copyFlag = (buf[3] >> 3) & 0x01;
     m_FrameHeader->origFlag = (buf[3] >> 2) & 0x01;
     m_FrameHeader->emphasis = (buf[3] >> 0) & 0x03;
-    /* check parameters to avoid indexing tables with bad values */
+    /* check parameters to avoid MP3Decoder::  indexing tables with bad values */
     if (m_FrameHeader->srIdx == 3 || m_FrameHeader->layer == 4 || m_FrameHeader->brIdx == 15) { return -1; }
     /* for readability (we reference sfBandTable many times in decoder) */
     m_SFBandTable = sfBandTable[m_MPEGVersion][m_FrameHeader->srIdx];
@@ -140,8 +187,8 @@ int32_t UnpackFrameHeader(uint8_t* buf) {
         return 4;
     }
 }
-//----------------------------------------------------------------------------------------------------------------------
-int32_t UnpackSideInfo(uint8_t* buf) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::UnpackSideInfo(uint8_t* buf) {
     int32_t         gr, ch, bd, nBytes;
     BitStreamInfo_t bitStreamInfo, *bsi;
 
@@ -213,7 +260,8 @@ int32_t UnpackSideInfo(uint8_t* buf) {
     assert(nBytes == CalcBitsUsed(bsi, buf, 0) >> 3);
     return nBytes;
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    UnpackSFMPEG1
  *
  * Description: unpack MPEG 1 scalefactors from bitstream
@@ -235,8 +283,8 @@ int32_t UnpackSideInfo(uint8_t* buf) {
  *                so that we index through consectutive memory locations when unpacking
  *                (make sure dequantizer follows same convention)
  *              Illegal Intensity Position = 7 (always) for MPEG1 scale factors
- **********************************************************************************************************************/
-void UnpackSFMPEG1(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, int32_t* scfsi, int32_t gr, ScaleFactorInfoSub_t* sfisGr0) {
+ */
+void MP3Decoder::UnpackSFMPEG1(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, int32_t* scfsi, int32_t gr, ScaleFactorInfoSub_t* sfisGr0) {
     int32_t sfb;
     int32_t slen0, slen1;
     /* these can be 0, so make sure GetBits(bsi, 0) returns 0 (no >> 32 or anything) */
@@ -300,7 +348,8 @@ void UnpackSFMPEG1(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_
         sfis->l[22] = 0;
     }
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    UnpackSFMPEG2
  *
  * Description: unpack MPEG 2 scalefactors from bitstream
@@ -319,8 +368,8 @@ void UnpackSFMPEG1(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_
  * Return:      none
  *
  * Notes:       Illegal Intensity Position = (2^slen) - 1 for MPEG2 scale factors
- **********************************************************************************************************************/
-void UnpackSFMPEG2(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, int32_t gr, int32_t ch, int32_t modeExt, ScaleFactorJS_t* sfjs) {
+ */
+void MP3Decoder::UnpackSFMPEG2(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, int32_t gr, int32_t ch, int32_t modeExt, ScaleFactorJS_t* sfjs) {
 
     int32_t i, sfb, sfcIdx, btIdx, nrIdx; // iipTest;
     int32_t slen[4], nr[4];
@@ -441,7 +490,8 @@ void UnpackSFMPEG2(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_
         sfis->l[21] = sfis->l[22] = 0;
     }
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    UnpackScaleFactors
  *
  * Description: parse the fields of the MP3 scale factor data section
@@ -456,8 +506,8 @@ void UnpackSFMPEG2(BitStreamInfo_t* bsi, SideInfoSub_t* sis, ScaleFactorInfoSub_
  *              updated bitOffset
  *
  * Return:      length (in bytes) of scale factor data, -1 if null input pointers
- **********************************************************************************************************************/
-int32_t UnpackScaleFactors(uint8_t* buf, int32_t* bitOffset, int32_t bitsAvail, int32_t gr, int32_t ch) {
+ */
+int32_t MP3Decoder::UnpackScaleFactors(uint8_t* buf, int32_t* bitOffset, int32_t bitsAvail, int32_t gr, int32_t ch) {
     int32_t         bitsUsed;
     uint8_t*        startBuf;
     BitStreamInfo_t bitStreamInfo, *bsi;
@@ -471,7 +521,7 @@ int32_t UnpackScaleFactors(uint8_t* buf, int32_t* bitOffset, int32_t bitsAvail, 
     if (m_MPEGVersion == MPEG1)
         UnpackSFMPEG1(bsi, &m_SideInfoSub[gr][ch], &m_ScaleFactorInfoSub[gr][ch], m_SideInfo->scfsi[ch], gr, &m_ScaleFactorInfoSub[0][ch]);
     else
-        UnpackSFMPEG2(bsi, &m_SideInfoSub[gr][ch], &m_ScaleFactorInfoSub[gr][ch], gr, ch, m_FrameHeader->modeExt, m_ScaleFactorJS);
+        UnpackSFMPEG2(bsi, &m_SideInfoSub[gr][ch], &m_ScaleFactorInfoSub[gr][ch], gr, ch, m_FrameHeader->modeExt, m_ScaleFactorJS.get());
 
     m_MP3DecInfo->part23Length[gr][ch] = m_SideInfoSub[gr][ch].part23Length;
 
@@ -481,11 +531,10 @@ int32_t UnpackScaleFactors(uint8_t* buf, int32_t* bitOffset, int32_t bitsAvail, 
 
     return (buf - startBuf);
 }
-/*****************************************************************************************************************************************************
- * M P 3 D E C
- ****************************************************************************************************************************************************/
-
-/*****************************************************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/* M P 3 D E C */
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3FindSyncWord
  *
  * Description: locate the next byte-alinged sync word in the raw mp3 stream
@@ -497,8 +546,8 @@ int32_t UnpackScaleFactors(uint8_t* buf, int32_t* bitOffset, int32_t bitsAvail, 
  *
  * Return:      offset to first sync word (bytes from start of buf)
  *              -1 if sync not found after searching nBytes
- ****************************************************************************************************************************************************/
-int32_t MP3FindSyncWord(uint8_t* buf, int32_t nBytes) {
+ */
+int32_t MP3Decoder::findSyncWord(uint8_t* buf, int32_t nBytes) {
 
     // Auxiliary function for extracting bits, byte 'value', 'start_bit' is that bit from the left (0-7), 'num_bits' is the number of bits
     // auto extract_bits = [&](uint8_t byte, uint8_t start_bit, uint8_t num_bits) {
@@ -506,17 +555,17 @@ int32_t MP3FindSyncWord(uint8_t* buf, int32_t nBytes) {
     // };
 
     typedef struct {
-        uint8_t  mpeg_version; // 0=MPEG2.5, 1=reserved, 2=MPEG2, 3=MPEG1
-        uint8_t  layer;        // 0=reserved, 1=Layer III, 2=Layer II, 3=Layer I
-        bool     crc_protected;
-        uint8_t  bitrate_idx;
-        uint8_t  sample_rate_idx;
-        bool     padding;
-        uint8_t  channel_mode;
-        uint32_t frame_length = 0; // cytes
-        uint16_t sample_rate_hz;   // the actual sampling rate in Hz
-        uint16_t bitrate_kbps;     // the actual bit rate in Kbps
-        uint16_t samples_per_frame;
+        uint8_t  mpeg_version = 0; // 0=MPEG2.5, 1=reserved, 2=MPEG2, 3=MPEG1
+        uint8_t  layer = 0;        // 0=reserved, 1=Layer III, 2=Layer II, 3=Layer I
+        bool     crc_protected = 0;
+        uint8_t  bitrate_idx = 0;
+        uint8_t  sample_rate_idx = 0;
+        bool     padding = 0;
+        uint8_t  channel_mode = 0;
+        uint32_t frame_length = 0;   // cytes
+        uint16_t sample_rate_hz = 0; // the actual sampling rate in Hz
+        uint16_t bitrate_kbps = 0;   // the actual bit rate in Kbps
+        uint16_t samples_per_frame = 0;
     } Mp3FrameHeader_sync_t;
 
     // SamplingFrequenz-Lookup tables(Beispiel für MPEG1, MPEG2, MPEG2.5)
@@ -598,7 +647,7 @@ int32_t MP3FindSyncWord(uint8_t* buf, int32_t nBytes) {
         uint16_t sample_rate_hz = 0;
 
         // Mapping from MPEG version to sampling rate table
-        uint8_t sr_table_idx;
+        uint8_t sr_table_idx = 0;
         if (header_info->mpeg_version == 3)
             sr_table_idx = 0; // MPEG 1 (0b11)
         else if (header_info->mpeg_version == 2)
@@ -773,7 +822,8 @@ int32_t MP3FindSyncWord(uint8_t* buf, int32_t nBytes) {
 
     return -1; // no valid MP3 frame found
 }
-/*****************************************************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3FindFreeSync
  *
  * Description: figure out number of bytes between adjacent sync words in "free" mode
@@ -796,8 +846,8 @@ int32_t MP3FindSyncWord(uint8_t* buf, int32_t nBytes) {
  *              since free mode requires CBR (see spec) we generally only call
  *                this function once (first frame) then store the result (nSlots)
  *                and just use it from then on
- ****************************************************************************************************************************************************/
-int32_t MP3FindFreeSync(uint8_t* buf, uint8_t firstFH[4], int32_t nBytes) {
+ */
+int32_t MP3Decoder::MP3FindFreeSync(uint8_t* buf, uint8_t firstFH[4], int32_t nBytes) {
     int32_t  offset = 0;
     uint8_t* bufPtr = buf;
 
@@ -807,7 +857,7 @@ int32_t MP3FindFreeSync(uint8_t* buf, uint8_t firstFH[4], int32_t nBytes) {
      *      in next header must match current header)
      */
     while (1) {
-        offset = MP3FindSyncWord(bufPtr, nBytes);
+        offset = findSyncWord(bufPtr, nBytes);
         bufPtr += offset;
         if (offset < 0) {
             return -1;
@@ -823,7 +873,8 @@ int32_t MP3FindFreeSync(uint8_t* buf, uint8_t firstFH[4], int32_t nBytes) {
 
     return -1;
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3GetLastFrameInfo
  *
  * Description: get info about last MP3 frame decoded (number of sampled decoded,
@@ -836,8 +887,8 @@ int32_t MP3FindFreeSync(uint8_t* buf, uint8_t firstFH[4], int32_t nBytes) {
  * Return:      none
  *
  * Notes:       call this right after calling MP3Decode
- **********************************************************************************************************************/
-void MP3GetLastFrameInfo() {
+ */
+void MP3Decoder::MP3GetLastFrameInfo() {
     if (m_MP3DecInfo->layer != 3) {
         m_MP3FrameInfo->bitrate = 0;
         m_MP3FrameInfo->nChans = 0;
@@ -856,32 +907,70 @@ void MP3GetLastFrameInfo() {
         m_MP3FrameInfo->version = m_MPEGVersion;
     }
 }
-int32_t MP3GetSampRate() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::getSampleRate() {
     return m_MP3FrameInfo->samprate;
 }
-int32_t MP3GetChannels() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint8_t MP3Decoder::getChannels() {
     return m_MP3FrameInfo->nChans;
 }
-int32_t MP3GetBitsPerSample() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint8_t MP3Decoder::getBitsPerSample() {
     return m_MP3FrameInfo->bitsPerSample;
 }
-int32_t MP3GetBitrate() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::getBitRate() {
     return m_MP3FrameInfo->bitrate;
 }
-int32_t MP3GetOutputSamps() {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::getOutputSamples() {
     return m_MP3FrameInfo->outputSamps;
 }
-
-const char* MP3GetLayer() {
-    const char* layer_str = layer_table[m_MP3FrameInfo->layer]; // 0: Reserviert, 1: Layer III, 2: Layer II, 3: Layer I
-    return layer_str;
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+const char* MP3Decoder::arg1() {
+    m_mpeg_version_str.assign(mpeg_version_table[m_MP3FrameInfo->version]); // 0: MPEG-2.5, 1: Reserviert, 2: MPEG-2 (ISO/IEC 13818-3), 3: MPEG-1 (ISO/IEC 11172-3)
+    m_mpeg_version_str.appendf(" %s", layer_table[m_MP3FrameInfo->layer]);
+    return m_mpeg_version_str.get();
 }
-
-const char* MP3GetMPEGVersion() {
-    const char* mpeg_version_str = mpeg_version_table[m_MP3FrameInfo->version]; // 0: MPEG-2.5, 1: Reserviert, 2: MPEG-2 (ISO/IEC 13818-3), 3: MPEG-1 (ISO/IEC 11172-3)
-    return mpeg_version_str;
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::getAudioDataStart() {
+    return 0; // nothing todo
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint32_t MP3Decoder::getAudioFileDuration() {
+    return 0; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+const char* MP3Decoder::getStreamTitle() {
+    return nullptr; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+const char* MP3Decoder::whoIsIt() {
+    return "MP3";
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::setRawBlockParams(uint8_t channels, uint32_t sampleRate, uint8_t BPS, uint32_t tsis, uint32_t AuDaLength) {
+    return; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+std::vector<uint32_t> MP3Decoder::getMetadataBlockPicture() {
+    return {};
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+const char* MP3Decoder::arg2() {
+    return ""; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::val1() {
+    return 0; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::val2() {
+    return 0; // nothing todo
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3GetNextFrameInfo
  *
  * Description: parse MP3 frame header
@@ -892,8 +981,8 @@ const char* MP3GetMPEGVersion() {
  * Outputs:     filled-in MP3FrameInfo struct
  *
  * Return:      error code, defined in mp3dec.h (0 means no error, < 0 means error)
- **********************************************************************************************************************/
-int32_t MP3GetNextFrameInfo(uint8_t* buf) {
+ */
+int32_t MP3Decoder::MP3GetNextFrameInfo(uint8_t* buf) {
 
     if (UnpackFrameHeader(buf) == -1 || m_MP3DecInfo->layer != 3) {
         MP3_LOG_ERROR("MP3 invalid frameheader");
@@ -903,7 +992,8 @@ int32_t MP3GetNextFrameInfo(uint8_t* buf) {
 
     return MP3_NONE;
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3ClearBadFrame
  *
  * Description: zero out pcm buffer if error decoding MP3 frame
@@ -914,12 +1004,75 @@ int32_t MP3GetNextFrameInfo(uint8_t* buf) {
  * Outputs:     zeroed out pcm buffer
  *
  * Return:      none
- **********************************************************************************************************************/
-void MP3ClearBadFrame(int16_t* outbuf) {
+ */
+void MP3Decoder::MP3ClearBadFrame(int16_t* outbuf) {
     int32_t i;
     for (i = 0; i < m_MP3DecInfo->nGrans * m_MP3DecInfo->nGranSamps * m_MP3DecInfo->nChans; i++) outbuf[i] = 0;
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
+ * Function:    IsLikelyRealFrame
+ *
+ * Description: Detection of valid MP3 frames
+ *
+ * Return:      true, if valid
+ *              false if ID3 padding fragments, LAME Info, Xing Header, VBRI Header, Repeater-Frames, Encoder Delay Blocks
+ * LAME Info
+ */
+int32_t MP3Decoder::IsLikelyRealFrame(const uint8_t* p, int32_t bytesLeft) {
+
+    auto CalcFrameLength = [](const uint8_t* h) -> int {
+        static const int bitrateTable[2][16] = {
+            {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},    // MPEG2/2.5
+            {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0} // MPEG1
+        };
+
+        static const int samplerateTable[3][3] = {
+            {11025, 12000, 8000},  // MPEG 2.5
+            {22050, 24000, 16000}, // MPEG 2
+            {44100, 48000, 32000}  // MPEG 1
+        };
+
+        uint8_t verID = (h[1] >> 3) & 0x03;
+        uint8_t layer = (h[1] >> 1) & 0x03;
+        uint8_t brIdx = (h[2] >> 4) & 0x0F;
+        uint8_t srIdx = (h[2] >> 2) & 0x03;
+        uint8_t padding = (h[2] >> 1) & 0x01;
+
+        if (layer != 1) return -1;
+        if (srIdx == 3) return -1;
+        if (brIdx == 0 || brIdx == 15) return -1;
+
+        int verGroup = (verID == 3) ? 2 : (verID == 2 ? 1 : 0);
+        int samplerate = samplerateTable[verGroup][srIdx];
+        if (samplerate == 0) return -1;
+
+        int br = bitrateTable[(verID == 3)][brIdx] * 1000;
+
+        int frameLength = (verID == 3) ? (144 * br / samplerate + padding) : (72 * br / samplerate + padding);
+
+        return frameLength;
+    };
+
+    // 1) Sync?
+    if (p[0] != 0xFF || (p[1] & 0xE0) != 0xE0) return 0; // no header
+
+    int frameLen = CalcFrameLength(p);
+    if (frameLen <= 0 || frameLen > bytesLeft) return -frameLen; // Fake frame
+
+    // 2) Hard limits
+    if (frameLen < 96 || frameLen > 2880) return -frameLen; // is fake
+
+    // 3) Check next header
+    const uint8_t* next = p + frameLen;
+    if (bytesLeft >= frameLen + 4 && next[0] == 0xFF && (next[1] & 0xE0) == 0xE0) {
+        return frameLen; // echtes Frame
+    }
+
+    return -frameLen; // Fakeframe
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    MP3Decode
  *
  * Description: decode one frame of MP3 data
@@ -937,29 +1090,69 @@ void MP3ClearBadFrame(int16_t* outbuf) {
  *
  * Notes:       switching useSize on and off between frames in the same stream
  *                is not supported (bit reservoir is not maintained if useSize on)
- **********************************************************************************************************************/
-int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
+ */
 
-    // int pos = MP3FindSyncWord(inbuf, *bytesLeft);
-    // if(pos > 0){*bytesLeft -= pos; MP3_INFO("skip %i bytes", pos); return MP3_NONE; }
-    // if(pos < 0){MP3_INFO("skip %i max bytes", *bytesLeft);  *bytesLeft = 0; return MP3_NONE; }
+int32_t MP3Decoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int32_t* outbuf) {
+
+    // Skip fake frames
+    int frameLen = IsLikelyRealFrame(inbuf, *bytesLeft);
+    if (frameLen == 0) {
+        if (memcmp(inbuf, "APETAGEX", 8) == 0) {
+            MP3_LOG_DEBUG("APETAGEX gefunden");
+            uint32_t version = inbuf[8] | (inbuf[9] << 8) | (inbuf[10] << 16) | (inbuf[11] << 24);
+            uint32_t size = inbuf[12] | (inbuf[13] << 8) | (inbuf[14] << 16) | (inbuf[15] << 24);
+            MP3_LOG_DEBUG("version %i size %i", version, size);
+            *bytesLeft -= min(*bytesLeft, (int32_t)size);
+            return MP3_NEXT_FRAME;
+        }
+    }
+
+    if (m_invalid_frame.start == true && m_invalid_frame.timer + 3000 > millis()) m_invalid_frame.start = false;
+
+    if (frameLen <= 0) {
+        int skip = abs(frameLen);
+        if (skip > 0 && skip <= *bytesLeft) {
+            *bytesLeft -= skip;
+            MP3_LOG_DEBUG("Fakeframe, size %i", abs(frameLen));
+
+            if (m_invalid_frame.start == false) { // fake frames control
+                m_invalid_frame.start = true;
+                m_invalid_frame.timer = millis();
+                m_invalid_frame.count1 = 0;
+                m_invalid_frame.count2 = 0;
+            } else {
+                m_invalid_frame.count1++;
+                if (m_invalid_frame.start && m_invalid_frame.timer + 1000 < millis()) { m_invalid_frame.count2++; }
+                if (m_invalid_frame.start && m_invalid_frame.timer + 2000 < millis()) {
+                    if (m_invalid_frame.count1 > 5 && m_invalid_frame.count2 > 5) {
+                        // network error
+                        m_invalid_frame.start = false;
+                        return MP3_NEED_RESTART;
+                    }
+                }
+            }
+
+            return MP3_NONE; // fakeframe
+        }
+        // inbuf empty or unusable
+        return MP3_ERR;
+    }
 
     int32_t        offset, bitOffset, mainBits, gr, ch, fhBytes, siBytes, freeFrameBytes;
     int32_t        prevBitOffset, sfBlockBits, huffBlockBits;
     uint8_t*       mainPtr;
     static uint8_t underflowCounter = 0; // http://macslons-irish-pub-radio.stream.laut.fm/macslons-irish-pub-radio
-
     /* unpack frame header */
     fhBytes = UnpackFrameHeader(inbuf);
     if (fhBytes < 0) {
-        MP3_LOG_ERROR("MP3 invalid frameheader"); /* don't clear outbuf since we don't know size (failed to parse header) */
+        MP3_LOG_ERROR("MP3 invalid frameheader"); /* don't clear out16 since we don't know size (failed to parse header) */
         return MP3_ERR;
     }
     inbuf += fhBytes;
     /* unpack side info */
     siBytes = UnpackSideInfo(inbuf);
     if (siBytes < 0) {
-        MP3ClearBadFrame(outbuf);
+        MP3ClearBadFrame(m_out16.get());
         MP3_LOG_ERROR("MP3 invalid sideinfo");
         return MP3_ERR;
     }
@@ -973,7 +1166,7 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
             m_MP3DecInfo->freeBitrateFlag = 1;
             m_MP3DecInfo->freeBitrateSlots = MP3FindFreeSync(inbuf, inbuf - fhBytes - siBytes, *bytesLeft);
             if (m_MP3DecInfo->freeBitrateSlots < 0) {
-                MP3ClearBadFrame(outbuf);
+                MP3ClearBadFrame(m_out16.get());
                 m_MP3DecInfo->freeBitrateFlag = 0;
                 MP3_LOG_ERROR("MP3, ca'nt find free bitrate slot");
                 return MP3_ERR;
@@ -984,33 +1177,12 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
         m_MP3DecInfo->nSlots = m_MP3DecInfo->freeBitrateSlots + CheckPadBit(); /* add pad byte, if required */
     }
 
-    /* useSize != 0 means we're getting reformatted (RTP) packets (see RFC 3119)
-     *  - calling function assembles "self-contained" MP3 frames by shifting any main_data
-     *      from the bit reservoir (in previous frames) to AFTER the sync word and side info
-     *  - calling function should set mainDataBegin to 0, and tell us exactly how large this
-     *      frame is (in bytesLeft)
-     */
-    // if (useSize) {
-    //     m_MP3DecInfo->nSlots = *bytesLeft;
-    //     if (m_MP3DecInfo->mainDataBegin != 0 || m_MP3DecInfo->nSlots <= 0) {
-    //         /* error - non self-contained frame, or missing frame (size <= 0), could do loss concealment here */
-    //         MP3ClearBadFrame(outbuf);
-    //         MP3_ERROR("MP3, invalid frameheader");
-    //         return MP3_ERR;
-    //     }
-
-    //     /* can operate in-place on reformatted frames */
-    //     m_MP3DecInfo->mainDataBytes = m_MP3DecInfo->nSlots;
-    //     mainPtr = inbuf;
-    //     inbuf += m_MP3DecInfo->nSlots;
-    //     *bytesLeft -= (m_MP3DecInfo->nSlots);
-    // } else {
-    /* out of data - assume last or truncated frame */
     if (m_MP3DecInfo->nSlots > *bytesLeft) {
-        MP3ClearBadFrame(outbuf);
-        MP3_LOG_ERROR("MP3, indata underflow");
-        return MP3_ERR;
+        MP3ClearBadFrame(m_out16.get());
+        MP3_LOG_DEBUG("MP3, indata underflow");
+        return MP3_MAIN_DATA_UNDERFLOW;
     }
+
     /* fill main data buffer with enough new data for this frame */
     if (m_MP3DecInfo->mainDataBytes >= m_MP3DecInfo->mainDataBegin) {
         /* adequate "old" main data available (i.e. bit reservoir) */
@@ -1030,9 +1202,9 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
         inbuf += m_MP3DecInfo->nSlots;
         *bytesLeft -= (m_MP3DecInfo->nSlots);
         if (underflowCounter < 4) { return MP3_NONE; }
-        MP3ClearBadFrame(outbuf);
-        MP3_LOG_ERROR("MP3, maindata underflow");
-        return MP3_ERR;
+        MP3ClearBadFrame(m_out16.get());
+        MP3_LOG_DEBUG("MP3, maindata underflow");
+        return MP3_NONE;
     }
     //    }
     bitOffset = 0;
@@ -1050,7 +1222,7 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
             mainBits -= sfBlockBits;
 
             if (offset < 0 || mainBits < huffBlockBits) {
-                MP3ClearBadFrame(outbuf);
+                MP3ClearBadFrame(m_out16.get());
                 MP3_LOG_ERROR("MP3, invalid scalefact");
                 return MP3_ERR;
             }
@@ -1058,7 +1230,7 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
             prevBitOffset = bitOffset;
             offset = DecodeHuffman(mainPtr, &bitOffset, huffBlockBits, gr, ch);
             if (offset < 0) {
-                MP3ClearBadFrame(outbuf);
+                MP3ClearBadFrame(m_out16.get());
                 MP3_LOG_ERROR("MP3, invalid Huffman code words");
                 return MP3_ERR;
             }
@@ -1067,7 +1239,7 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
         }
         /* dequantize coefficients, decode stereo, reorder int16_t blocks */
         if (MP3Dequantize(gr) < 0) {
-            MP3ClearBadFrame(outbuf);
+            MP3ClearBadFrame(m_out16.get());
             MP3_LOG_ERROR("MP3, invalid dequantize coefficients");
             return MP3_ERR;
         }
@@ -1075,174 +1247,39 @@ int32_t MP3Decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
         /* alias reduction, inverse MDCT, overlap-add, frequency inversion */
         for (ch = 0; ch < m_MP3DecInfo->nChans; ch++) {
             if (IMDCT(gr, ch) < 0) {
-                MP3ClearBadFrame(outbuf);
+                MP3ClearBadFrame(m_out16.get());
                 MP3_LOG_ERROR("MP3, invalid inverse MDCT");
                 return MP3_ERR;
             }
         }
         /* subband transform - if stereo, interleaves pcm LRLRLR */
-        if (Subband(outbuf + gr * m_MP3DecInfo->nGranSamps * m_MP3DecInfo->nChans) < 0) {
-            MP3ClearBadFrame(outbuf);
+        if (Subband(m_out16.get() + gr * m_MP3DecInfo->nGranSamps * m_MP3DecInfo->nChans) < 0) {
+            MP3ClearBadFrame(m_out16.get());
             MP3_LOG_ERROR("MP3, invalid subband");
             return MP3_ERR;
         }
     }
     MP3GetLastFrameInfo();
+
+    if (m_MP3FrameInfo->nChans == 1) {
+        for (int i = 0; i < m_MP3FrameInfo->outputSamps; i++) {
+            outbuf[i * 2] = m_out16[i] << 16;
+            outbuf[i * 2 + 1] = m_out16[i] << 16;
+        }
+    }
+
+    if (m_MP3FrameInfo->nChans == 2) {
+        for (int i = 0; i < m_MP3FrameInfo->outputSamps * 2; i++) { outbuf[i] = m_out16[i] << 16; }
+    }
+
     return MP3_NONE;
 }
-
-/***********************************************************************************************************************
- * Function:    MP3Decoder_ClearBuffer
- *
- * Description: clear all the memory needed for the MP3 decoder
- *
- * Inputs:      none
- *
- * Outputs:     none
- *
- * Return:      none
- *
- **********************************************************************************************************************/
-void MP3Decoder_ClearBuffer(void) {
-
-    /* important to do this - DSP primitives assume a bunch of state variables are 0 on first use */
-    memset(m_MP3DecInfo, 0, sizeof(MP3DecInfo_t));                                            // Clear MP3DecInfo
-    memset(&m_ScaleFactorInfoSub, 0, sizeof(ScaleFactorInfoSub_t) * (MAX_NGRAN * MAX_NCHAN)); // Clear ScaleFactorInfo
-    memset(m_SideInfo, 0, sizeof(SideInfo_t));                                                // Clear SideInfo
-    memset(m_FrameHeader, 0, sizeof(FrameHeader_t));                                          // Clear FrameHeader
-    memset(m_HuffmanInfo, 0, sizeof(HuffmanInfo_t));                                          // Clear HuffmanInfo
-    memset(m_DequantInfo, 0, sizeof(DequantInfo_t));                                          // Clear DequantInfo
-    memset(m_IMDCTInfo, 0, sizeof(IMDCTInfo_t));                                              // Clear IMDCTInfo
-    memset(m_SubbandInfo, 0, sizeof(SubbandInfo_t));                                          // Clear SubbandInfo
-    memset(&m_CriticalBandInfo, 0, sizeof(CriticalBandInfo_t) * MAX_NCHAN);                   // Clear CriticalBandInfo
-    memset(m_ScaleFactorJS, 0, sizeof(ScaleFactorJS_t));                                      // Clear ScaleFactorJS
-    memset(&m_SideInfoSub, 0, sizeof(SideInfoSub_t) * (MAX_NGRAN * MAX_NCHAN));               // Clear SideInfoSub
-    memset(&m_SFBandTable, 0, sizeof(SFBandTable_t));                                         // Clear SFBandTable
-    memset(m_MP3FrameInfo, 0, sizeof(MP3FrameInfo_t));                                        // Clear MP3FrameInfo
-
-    return;
-}
-/***********************************************************************************************************************
- * Function:    MP3Decoder_AllocateBuffers
- *
- * Description: allocate all the memory needed for the MP3 decoder
- *
- * Inputs:      none
- *
- * Outputs:     none
- *
- * Return:      pointer to MP3DecInfo structure (initialized with pointers to all
- *                the internal buffers needed for decoding)
- *
- * Notes:       if one or more mallocs fail, function frees any buffers already
- *                allocated before returning
- *
- **********************************************************************************************************************/
-
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-    // ESP32-S3: If there is PSRAM, prefer it
-    #define __malloc_heap_psram(size) heap_caps_malloc_prefer(size, 2, MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM, MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL)
-#else
-    // ESP32, PSRAM is too slow, prefer SRAM
-    #define __malloc_heap_psram(size) heap_caps_malloc_prefer(size, 2, MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL, MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM)
-#endif
-
-bool MP3Decoder_AllocateBuffers(void) {
-    if (!m_MP3DecInfo) { m_MP3DecInfo = (MP3DecInfo_t*)__malloc_heap_psram(sizeof(MP3DecInfo_t)); }
-    if (!m_FrameHeader) { m_FrameHeader = (FrameHeader_t*)__malloc_heap_psram(sizeof(FrameHeader_t)); }
-    if (!m_SideInfo) { m_SideInfo = (SideInfo_t*)__malloc_heap_psram(sizeof(SideInfo_t)); }
-    if (!m_ScaleFactorJS) { m_ScaleFactorJS = (ScaleFactorJS_t*)__malloc_heap_psram(sizeof(ScaleFactorJS_t)); }
-    if (!m_HuffmanInfo) { m_HuffmanInfo = (HuffmanInfo_t*)__malloc_heap_psram(sizeof(HuffmanInfo_t)); }
-    if (!m_DequantInfo) { m_DequantInfo = (DequantInfo_t*)__malloc_heap_psram(sizeof(DequantInfo_t)); }
-    if (!m_IMDCTInfo) { m_IMDCTInfo = (IMDCTInfo_t*)__malloc_heap_psram(sizeof(IMDCTInfo_t)); }
-    if (!m_SubbandInfo) { m_SubbandInfo = (SubbandInfo_t*)__malloc_heap_psram(sizeof(SubbandInfo_t)); }
-    if (!m_MP3FrameInfo) { m_MP3FrameInfo = (MP3FrameInfo_t*)__malloc_heap_psram(sizeof(MP3FrameInfo_t)); }
-
-    if (!m_MP3DecInfo || !m_FrameHeader || !m_SideInfo || !m_ScaleFactorJS || !m_HuffmanInfo || !m_DequantInfo || !m_IMDCTInfo || !m_SubbandInfo || !m_MP3FrameInfo) {
-        MP3Decoder_FreeBuffers();
-        MP3_LOG_ERROR("not enough memory to allocate mp3decoder buffers");
-        return false;
-    }
-    MP3Decoder_ClearBuffer();
-    return true;
-}
-/***********************************************************************************************************************
- * Function:    MP3Decoder_IsInit
- *
- * Description: returns MP3 decoder initialization status
- *
- * Inputs:      none
- *
- * Outputs:     none
- *
- * Return:      true if buffers allocated, otherwise false
-
- **********************************************************************************************************************/
-bool MP3Decoder_IsInit(void) {
-    if (!m_MP3DecInfo || !m_FrameHeader || !m_SideInfo || !m_ScaleFactorJS || !m_HuffmanInfo || !m_DequantInfo || !m_IMDCTInfo || !m_SubbandInfo || !m_MP3FrameInfo) { return false; }
-    return true;
-}
-/***********************************************************************************************************************
- * Function:    MP3Decoder_FreeBuffers
- *
- * Description: frees all the memory used by the MP3 decoder
- *
- * Inputs:      pointer to initialized MP3DecInfo structure
- *
- * Outputs:     none
- *
- * Return:      none
- *
- * Notes:       safe to call even if some buffers were not allocated
- **********************************************************************************************************************/
-void MP3Decoder_FreeBuffers() {
-    //    uint32_t i = ESP.getFreeHeap();
-
-    if (m_MP3DecInfo) {
-        free(m_MP3DecInfo);
-        m_MP3DecInfo = NULL;
-    }
-    if (m_FrameHeader) {
-        free(m_FrameHeader);
-        m_FrameHeader = NULL;
-    }
-    if (m_SideInfo) {
-        free(m_SideInfo);
-        m_SideInfo = NULL;
-    }
-    if (m_ScaleFactorJS) {
-        free(m_ScaleFactorJS);
-        m_ScaleFactorJS = NULL;
-    }
-    if (m_HuffmanInfo) {
-        free(m_HuffmanInfo);
-        m_HuffmanInfo = NULL;
-    }
-    if (m_DequantInfo) {
-        free(m_DequantInfo);
-        m_DequantInfo = NULL;
-    }
-    if (m_IMDCTInfo) {
-        free(m_IMDCTInfo);
-        m_IMDCTInfo = NULL;
-    }
-    if (m_SubbandInfo) {
-        free(m_SubbandInfo);
-        m_SubbandInfo = NULL;
-    }
-    if (m_MP3FrameInfo) {
-        free(m_MP3FrameInfo);
-        m_MP3FrameInfo = NULL;
-    }
-
-    //    MP3_LOG_DEBUG("MP3Decoder: %lu bytes memory was freed", ESP.getFreeHeap() - i);
-}
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * H U F F M A N N
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    DecodeHuffmanPairs
  *
  * Description: decode 2-way vector Huffman codes in the "bigValues" region of spectrum
@@ -1261,10 +1298,10 @@ void MP3Decoder_FreeBuffers() {
  * Notes:       assumes that nVals is an even number
  *              si_huff.bit tests every Huffman codeword in every table (though not
  *                necessarily all linBits outputs for x,y > 15)
- **********************************************************************************************************************/
+ */
 // no improvement with section=data
 
-int32_t DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t bitsLeft, uint8_t* buf, int32_t bitOffset) {
+int32_t MP3Decoder::DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t bitsLeft, uint8_t* buf, int32_t bitOffset) {
     int32_t       i, x, y;
     int32_t       cachedBits, padBits, len, startBits, linBits, maxBits, minBits;
     HuffTabType_t tabType;
@@ -1366,8 +1403,8 @@ int32_t DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t b
 
                 /* ran out of bits - should never have consumed padBits */
                 if (cachedBits < padBits) {
-                    break; // https://bestof80s.stream.laut.fm/best_of_80s (after advertising)
-                    //    return -1;
+                    MP3_LOG_ERROR("MP3, error - overran end of bitstream"); // https://bestof80s.stream.laut.fm/best_of_80s (after advertising)
+                    return MP3_ERR;
                 }
 
                 *xy++ = x;
@@ -1443,7 +1480,10 @@ int32_t DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t b
 
                 if (y == 15 && tabType == loopLinbits) {
                     minBits = linBits + 1;
-                    if (cachedBits + bitsLeft < minBits) break; // https://bestof80s.stream.laut.fm/best_of_80s (after advertising)
+                    if (cachedBits + bitsLeft < minBits) {
+                        MP3_LOG_ERROR("MP3, error - overran end of bitstream"); // https://bestof80s.stream.laut.fm/best_of_80s (after advertising)
+                        return MP3_ERR;
+                    }
                     // return -1;
                     while (cachedBits < minBits) {
                         cache |= (uint32_t)(*buf++) << (24 - cachedBits);
@@ -1484,8 +1524,8 @@ int32_t DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t b
     /* error in bitstream - trying to access unused Huffman table */
     return -1;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    DecodeHuffmanQuads
  *
  * Description: decode 4-way vector Huffman codes in the "count1" region of spectrum
@@ -1503,9 +1543,9 @@ int32_t DecodeHuffmanPairs(int32_t* xy, int32_t nVals, int32_t tabIdx, int32_t b
  *                of the quad word after which all samples are 0)
  *
  * Notes:        si_huff.bit tests every vwxy output in both quad tables
- **********************************************************************************************************************/
+ */
 // no improvement with section=data
-int32_t DecodeHuffmanQuads(int32_t* vwxy, int32_t nVals, int32_t tabIdx, int32_t bitsLeft, uint8_t* buf, int32_t bitOffset) {
+int32_t MP3Decoder::DecodeHuffmanQuads(int32_t* vwxy, int32_t nVals, int32_t tabIdx, int32_t bitsLeft, uint8_t* buf, int32_t bitOffset) {
     int32_t  i, v, w, x, y;
     int32_t  len, maxBits, cachedBits, padBits;
     uint32_t cache;
@@ -1592,8 +1632,8 @@ int32_t DecodeHuffmanQuads(int32_t* vwxy, int32_t nVals, int32_t tabIdx, int32_t
     /* decoded max number of quad values */
     return i;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    DecodeHuffman
  *
  * Description: decode one granule, one channel worth of Huffman codes
@@ -1614,9 +1654,9 @@ int32_t DecodeHuffmanQuads(int32_t* vwxy, int32_t nVals, int32_t tabIdx, int32_t
  *                byte located at buf + offset)
  *              -1 if null input pointers, huffBlockBits < 0, or decoder runs
  *                out of bits prematurely (invalid bitstream)
- **********************************************************************************************************************/
+ */
 // .data about 1ms faster per frame
-int32_t DecodeHuffman(uint8_t* buf, int32_t* bitOffset, int32_t huffBlockBits, int32_t gr, int32_t ch) {
+int32_t MP3Decoder::DecodeHuffman(uint8_t* buf, int32_t* bitOffset, int32_t huffBlockBits, int32_t gr, int32_t ch) {
 
     int32_t  r1Start, r2Start, rEnd[4]; /* region boundaries */
     int32_t  i, w, bitsUsed, bitsLeft;
@@ -1683,12 +1723,12 @@ int32_t DecodeHuffman(uint8_t* buf, int32_t* bitOffset, int32_t huffBlockBits, i
 
     return (buf - startBuf);
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * D E Q U A N T
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    MP3Dequantize
  *
  * Description: dequantize coefficients, decode stereo, reorder short blocks
@@ -1705,13 +1745,13 @@ int32_t DecodeHuffman(uint8_t* buf, int32_t* bitOffset, int32_t huffBlockBits, i
  *
  * Notes:       In calling output Q(DQ_FRACBITS_OUT), we assume an implicit bias
  *                of 2^15. Some (floating-point) reference implementations factor this
- *                into the 2^(0.25 * gain) scaling explicitly. But to avoid precision
+ *                into the 2^(0.25 * gain) scaling explicitly. But to avoid MP3Decoder::  precision
  *                loss, we don't do that. Instead take it into account in the final
  *                round to PCM (>> by 15 less than we otherwise would have).
  *              Equivalently, we can think of the dequantized coefficients as
  *                Q(DQ_FRACBITS_OUT - 15) with no implicit bias.
- **********************************************************************************************************************/
-int32_t MP3Dequantize(int32_t gr) {
+ */
+int32_t MP3Decoder::MP3Dequantize(int32_t gr) {
     int32_t             i, ch, nSamps, mOut[2];
     CriticalBandInfo_t* cbi;
     cbi = &m_CriticalBandInfo[0];
@@ -1760,8 +1800,8 @@ int32_t MP3Dequantize(int32_t gr) {
         if (m_MPEGVersion == MPEG1) {
             IntensityProcMPEG1(m_HuffmanInfo->huffDecBuf, nSamps, &m_ScaleFactorInfoSub[gr][1], &m_CriticalBandInfo[0], m_FrameHeader->modeExt >> 1, m_SideInfoSub[gr][1].mixedBlock, mOut);
         } else {
-            IntensityProcMPEG2(m_HuffmanInfo->huffDecBuf, nSamps, &m_ScaleFactorInfoSub[gr][1], &m_CriticalBandInfo[0], m_ScaleFactorJS, m_FrameHeader->modeExt >> 1, m_SideInfoSub[gr][1].mixedBlock,
-                               mOut);
+            IntensityProcMPEG2(m_HuffmanInfo->huffDecBuf, nSamps, &m_ScaleFactorInfoSub[gr][1], &m_CriticalBandInfo[0], m_ScaleFactorJS.get(), m_FrameHeader->modeExt >> 1,
+                               m_SideInfoSub[gr][1].mixedBlock, mOut);
         }
     }
 
@@ -1777,12 +1817,12 @@ int32_t MP3Dequantize(int32_t gr) {
     /* output format Q(DQ_FRACBITS_OUT) */
     return 0;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * D Q C H A N
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    DequantBlock
  *
  * Description: Ken's highly-optimized, low memory dequantizer performing the operation
@@ -1795,8 +1835,8 @@ int32_t MP3Dequantize(int32_t gr) {
  * Outputs:     dequantized samples in Q25 format
  *
  * Return:      bitwise-OR of the unsigned outputs (for guard bit calculations)
- **********************************************************************************************************************/
-int32_t DequantBlock(int32_t* inbuf, int32_t* outbuf, int32_t num, int32_t scale) {
+ */
+int32_t MP3Decoder::DequantBlock(int32_t* inbuf, int32_t* outbuf, int32_t num, int32_t scale) {
     int32_t         tab4[4];
     int32_t         scalef, scalei, shift;
     int32_t         sx, x, y;
@@ -1875,8 +1915,8 @@ int32_t DequantBlock(int32_t* inbuf, int32_t* outbuf, int32_t num, int32_t scale
 
     return mask;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    DequantChannel
  *
  * Description: dequantize one granule, one channel worth of decoded Huffman codewords
@@ -1895,8 +1935,8 @@ int32_t DequantBlock(int32_t* inbuf, int32_t* outbuf, int32_t num, int32_t scale
  * Return:      minimum number of guard bits in dequantized sampleBuf
  *
  * Notes:       dequantized samples in Q(DQ_FRACBITS_OUT) format
- **********************************************************************************************************************/
-int32_t DequantChannel(int32_t* sampleBuf, int32_t* workBuf, int32_t* nonZeroBound, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi) {
+ */
+int32_t MP3Decoder::DequantChannel(int32_t* sampleBuf, int32_t* workBuf, int32_t* nonZeroBound, SideInfoSub_t* sis, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi) {
     int32_t                 i, j, w, cb;
     int32_t /* cbStartL, */ cbEndL, cbStartS, cbEndS;
     int32_t                 nSamps, nonZero, sfactMultiplier, gbMask;
@@ -2020,12 +2060,12 @@ int32_t DequantChannel(int32_t* sampleBuf, int32_t* workBuf, int32_t* nonZeroBou
 
     return CLZ(gbMask) - 1;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * S T P R O C
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    MidSideProc
  *
  * Description: sum-difference stereo reconstruction
@@ -2041,8 +2081,8 @@ int32_t DequantChannel(int32_t* sampleBuf, int32_t* workBuf, int32_t* nonZeroBou
  * Return:      none
  *
  * Notes:       assume at least 1 GB in input
- **********************************************************************************************************************/
-void MidSideProc(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, int32_t mOut[2]) {
+ */
+void MP3Decoder::MidSideProc(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, int32_t mOut[2]) {
     int32_t i, xr, xl, mOutL, mOutR;
 
     /* L = (M+S)/sqrt(2), R = (M-S)/sqrt(2)
@@ -2060,8 +2100,8 @@ void MidSideProc(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, int32_t mOut[2
     mOut[0] |= mOutL;
     mOut[1] |= mOutR;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    IntensityProcMPEG1
  *
  * Description: intensity stereo processing for MPEG1
@@ -2080,8 +2120,8 @@ void MidSideProc(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, int32_t mOut[2
  *
  * Notes:       assume at least 1 GB in input
  *
- **********************************************************************************************************************/
-void IntensityProcMPEG1(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi, int32_t midSideFlag, int32_t mixFlag, int32_t mOut[2]) {
+ */
+void MP3Decoder::IntensityProcMPEG1(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi, int32_t midSideFlag, int32_t mixFlag, int32_t mOut[2]) {
     int32_t  i = 0, j = 0, n = 0, cb = 0, w = 0;
     int32_t  sampsLeft, isf, mOutL, mOutR, xl, xr;
     int32_t  fl, fr, fls[3], frs[3];
@@ -2171,8 +2211,8 @@ void IntensityProcMPEG1(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFa
     mOut[1] = mOutR;
     return;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    IntensityProcMPEG2
  *
  * Description: intensity stereo processing for MPEG2
@@ -2192,9 +2232,9 @@ void IntensityProcMPEG1(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFa
  *
  * Notes:       assume at least 1 GB in input
  *
- **********************************************************************************************************************/
-void IntensityProcMPEG2(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi, ScaleFactorJS_t* sfjs, int32_t midSideFlag, int32_t mixFlag,
-                        int32_t mOut[2]) {
+ */
+void MP3Decoder::IntensityProcMPEG2(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFactorInfoSub_t* sfis, CriticalBandInfo_t* cbi, ScaleFactorJS_t* sfjs, int32_t midSideFlag, int32_t mixFlag,
+                                    int32_t mOut[2]) {
     int32_t  i, j, k, n, r, cb, w;
     int32_t  fl, fr, mOutL, mOutR, xl, xr;
     int32_t  sampsLeft;
@@ -2283,12 +2323,12 @@ void IntensityProcMPEG2(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFa
     mOut[1] = mOutR;
     return;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * I M D C T
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    AntiAlias
  *
  * Description: smooth transition across DCT block boundaries (every 18 coefficients)
@@ -2308,13 +2348,13 @@ void IntensityProcMPEG2(int32_t x[MAX_NCHAN][MAX_NSAMP], int32_t nSamps, ScaleFa
  *              max gain per sample = 1.372
  *                MAX(i) (abs(csa[i][0]) + abs(csa[i][1]))
  *              bits gained = 0
- *              assume at least 1 guard bit in x[] to avoid overflow
+ *              assume at least 1 guard bit in x[] to avoid MP3Decoder::  overflow
  *                (should be guaranteed from dequant, and max gain from stproc * max
  *                 gain from AntiAlias < 2.0)
- **********************************************************************************************************************/
+ */
 // a little bit faster in RAM (< 1 ms per block)
 /* __attribute__ ((section (".data"))) */
-void AntiAlias(int32_t* x, int32_t nBfly) {
+void MP3Decoder::AntiAlias(int32_t* x, int32_t nBfly) {
     int32_t         k, a0, b0, c0, c1;
     const uint32_t* c;
 
@@ -2395,8 +2435,8 @@ void AntiAlias(int32_t* x, int32_t nBfly) {
         x[7] = (MULSHIFT32(c0, b0) + MULSHIFT32(c1, a0)) << 1;
     }
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    WinPrevious
  *
  * Description: apply specified window to second half of previous IMDCT (overlap part)
@@ -2411,9 +2451,9 @@ void AntiAlias(int32_t* x, int32_t nBfly) {
  * Notes:       produces 9 output samples from 18 input samples via symmetry
  *              all blocks gain at least 1 guard bit via window (long blocks get extra
  *                sign bit, short blocks can have one addition but max gain < 1.0)
- **********************************************************************************************************************/
+ */
 
-void WinPrevious(int32_t* xPrev, int32_t* xPrevWin, int32_t btPrev) {
+void MP3Decoder::WinPrevious(int32_t* xPrev, int32_t* xPrevWin, int32_t btPrev) {
     int32_t         i, x, *xp, *xpwLo, *xpwHi, wLo, wHi;
     const uint32_t *wpLo, *wpHi;
 
@@ -2450,8 +2490,8 @@ void WinPrevious(int32_t* xPrev, int32_t* xPrevWin, int32_t btPrev) {
         }
     }
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    FreqInvertRescale
  *
  * Description: do frequency inversion (odd samples of odd blocks) and rescale
@@ -2466,9 +2506,9 @@ void WinPrevious(int32_t* xPrev, int32_t* xPrevWin, int32_t btPrev) {
  *              rescaled (as necessary) previous samples
  *
  * Return:      updated mOut (from new outputs y)
- **********************************************************************************************************************/
+ */
 
-int32_t FreqInvertRescale(int32_t* y, int32_t* xPrev, int32_t blockIdx, int32_t es) {
+int32_t MP3Decoder::FreqInvertRescale(int32_t* y, int32_t* xPrev, int32_t blockIdx, int32_t es) {
 
     if (es == 0) {
         /* fast case - frequency invert only (no rescaling) */
@@ -2521,9 +2561,9 @@ int32_t FreqInvertRescale(int32_t* y, int32_t* xPrev, int32_t blockIdx, int32_t 
     }
     return mOut;
 }
-
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 /* require at least 3 guard bits in x[] to ensure no overflow */
-void idct9(int32_t* x) {
+void MP3Decoder::idct9(int32_t* x) {
     int32_t a1, a2, a3, a4, a5, a6, a7, a8, a9;
     int32_t a10, a11, a12, a13, a14, a15, a16, a17, a18;
     int32_t a19, a20, a21, a22, a23, a24, a25, a26, a27;
@@ -2602,8 +2642,8 @@ void idct9(int32_t* x) {
     x8 = a23 - a19;
     x[8] = x8;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    IMDCT36
  *
  * Description: 36-point modified DCT, with windowing and overlap-add (50% overlap)
@@ -2631,10 +2671,10 @@ void idct9(int32_t* x) {
  *                long IMDCT + windowing + overlap-add in MP3
  *
  * Return:      mOut (OR of abs(y) for all y calculated here)
- **********************************************************************************************************************/
+ */
 // barely faster in RAM
 
-int32_t IMDCT36(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btCurr, int32_t btPrev, int32_t blockIdx, int32_t gb) {
+int32_t MP3Decoder::IMDCT36(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btCurr, int32_t btPrev, int32_t blockIdx, int32_t gb) {
     int32_t         i, es, xBuf[18], xPrevWin[18];
     int32_t         acc1, acc2, s, d, t, mOut;
     int32_t         xo, xe, c, *xp, yLo, yHi;
@@ -2731,11 +2771,11 @@ int32_t IMDCT36(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btCurr, int3
 
     return mOut;
 }
-
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 /* 12-point inverse DCT, used in IMDCT12x3()
  * 4 input guard bits will ensure no overflow
  */
-void imdct12(int32_t* x, int32_t* out) {
+void MP3Decoder::imdct12(int32_t* x, int32_t* out) {
     int32_t a0, a1, a2;
     int32_t x0, x1, x2, x3, x4, x5;
 
@@ -2791,8 +2831,8 @@ void imdct12(int32_t* x, int32_t* out) {
     out++;
     *out = x0 - x1;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    IMDCT12x3
  *
  * Description: three 12-point modified DCT's for short blocks, with windowing,
@@ -2810,9 +2850,9 @@ void imdct12(int32_t* x, int32_t* out) {
  *                only save 9 xPrev samples, using symmetry (see WinPrevious())
  *
  * Return:      mOut (OR of abs(y) for all y calculated here)
- **********************************************************************************************************************/
+ */
 // barely faster in RAM
-int32_t IMDCT12x3(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btPrev, int32_t blockIdx, int32_t gb) {
+int32_t MP3Decoder::IMDCT12x3(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btPrev, int32_t blockIdx, int32_t gb) {
     int32_t         i, es, mOut, yLo, xBuf[18], xPrevWin[18]; /* need temp buffer for reordering short blocks */
     const uint32_t* wp;
     es = 0;
@@ -2871,8 +2911,8 @@ int32_t IMDCT12x3(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btPrev, in
 
     return mOut;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    HybridTransform
  *
  * Description: IMDCT's, windowing, and overlap-add on long/short/mixed blocks
@@ -2893,8 +2933,8 @@ int32_t IMDCT12x3(int32_t* xCurr, int32_t* xPrev, int32_t* y, int32_t btPrev, in
  *
  * Return:      number of non-zero IMDCT blocks calculated in this call
  *                (including overlap-add)
- **********************************************************************************************************************/
-int32_t HybridTransform(int32_t* xCurr, int32_t* xPrev, int32_t y[BLOCK_SIZE][NBANDS], SideInfoSub_t* sis, BlockCount_t* bc) {
+ */
+int32_t MP3Decoder::HybridTransform(int32_t* xCurr, int32_t* xPrev, int32_t y[BLOCK_SIZE][NBANDS], SideInfoSub_t* sis, BlockCount_t* bc) {
     int32_t xPrevWin[18], currWinIdx, prevWinIdx;
     int32_t i, j, nBlocksOut, nonZero, mOut;
     int32_t fiBit, xp;
@@ -2969,8 +3009,8 @@ int32_t HybridTransform(int32_t* xCurr, int32_t* xPrev, int32_t y[BLOCK_SIZE][NB
 
     return nBlocksOut;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    IMDCT
  *
  * Description: do alias reduction, inverse MDCT, overlap-add, and frequency inversion
@@ -2985,10 +3025,10 @@ int32_t HybridTransform(int32_t* xCurr, int32_t* xPrev, int32_t y[BLOCK_SIZE][NB
  *              updated hi->nonZeroBound index for this channel
  *
  * Return:      0 on success,  -1 if null input pointers
- **********************************************************************************************************************/
+ */
 // a bit faster in RAM
 /*__attribute__ ((section (".data")))*/
-int32_t IMDCT(int32_t gr, int32_t ch) {
+int32_t MP3Decoder::IMDCT(int32_t gr, int32_t ch) {
     int32_t      nBfly, blockCutoff;
     BlockCount_t bc;
 
@@ -3041,12 +3081,12 @@ int32_t IMDCT(int32_t gr, int32_t ch) {
     /* output has gained 2int32_t bits */
     return 0;
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * S U B B A N D
- **********************************************************************************************************************/
+ */
 
-/***********************************************************************************************************************
+/*
  * Function:    Subband
  *
  * Description: do subband transform on all the blocks in one granule, all channels
@@ -3057,8 +3097,8 @@ int32_t IMDCT(int32_t gr, int32_t ch) {
  * Outputs:     decoded PCM data, interleaved LRLRLR... if stereo
  *
  * Return:      0 on success,  -1 if null input pointers
- **********************************************************************************************************************/
-int32_t Subband(int16_t* pcmBuf) {
+ */
+int32_t MP3Decoder::Subband(int16_t* pcmBuf) {
     int32_t b;
     if (m_MP3DecInfo->nChans == 2) {
         /* stereo */
@@ -3081,54 +3121,8 @@ int32_t Subband(int16_t* pcmBuf) {
 
     return 0;
 }
-
-/***********************************************************************************************************************
- * D C T 3 2
- **********************************************************************************************************************/
-
-/***********************************************************************************************************************
- * Function:    FDCT32
- *
- * Description: Ken's highly-optimized 32-point DCT (radix-4 + radix-8)
- *
- * Inputs:      input buffer, length = 32 samples
- *              require at least 6 guard bits in input vector x to avoid possibility
- *                of overflow in internal calculations (see bbtest_imdct test app)
- *              buffer offset and oddblock flag for polyphase filter input buffer
- *              number of guard bits in input
- *
- * Outputs:     output buffer, data copied and interleaved for polyphase filter
- *              no guarantees about number of guard bits in output
- *
- * Return:      none
- *
- * Notes:       number of muls = 4*8 + 12*4 = 80
- *              final stage of DCT is hardcoded to shuffle data into the proper order
- *                for the polyphase filterbank
- *              fully unrolled stage 1, for max precision (scale the 1/cos() factors
- *                differently, depending on magnitude)
- *              guard bit analysis verified by exhaustive testing of all 2^32
- *                combinations of max pos/max neg values in x[]
- **********************************************************************************************************************/
-#define D32FP(i, s1, s2)                                    \
-    {                                                       \
-        a0 = buf[i];                                        \
-        a3 = buf[31 - i];                                   \
-        a1 = buf[15 - i];                                   \
-        a2 = buf[16 + i];                                   \
-        b0 = a0 + a3;                                       \
-        b3 = MULSHIFT32(*cptr++, a0 - a3) << 1;             \
-        b1 = a1 + a2;                                       \
-        b2 = MULSHIFT32(*cptr++, a1 - a2) << (s1);          \
-        buf[i] = b0 + b1;                                   \
-        buf[15 - i] = MULSHIFT32(*cptr, b0 - b1) << (s2);   \
-        buf[16 + i] = b2 + b3;                              \
-        buf[31 - i] = MULSHIFT32(*cptr++, b3 - b2) << (s2); \
-    }
-
-static const uint8_t FDCT32s1s2[16] = {5, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 4};
-
-void FDCT32(int32_t* buf, int32_t* dest, int32_t offset, int32_t oddBlock, int32_t gb) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+void MP3Decoder::FDCT32(int32_t* buf, int32_t* dest, int32_t offset, int32_t oddBlock, int32_t gb) {
     int32_t        i, s, tmp, es;
     const int32_t* cptr = (const int32_t*)m_dcttab;
     int32_t        a0, a1, a2, a3, a4, a5, a6, a7;
@@ -3349,29 +3343,34 @@ void FDCT32(int32_t* buf, int32_t* dest, int32_t offset, int32_t oddBlock, int32
         }
     }
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * P O L Y P H A S E
- **********************************************************************************************************************/
-inline short ClipToShort(int32_t x, int32_t fracBits) {
-
+ */
+int16_t MP3Decoder::ClipToShort(int32_t x, int32_t fracBits) {
+#if (defined CONFIG_IDF_TARGET_ESP32 || defined CONFIG_IDF_TARGET_ESP32S3)
     /* assumes you've already rounded (x += (1 << (fracBits-1))) */
     x >>= fracBits;
-
-#ifndef __XTENSA__
-    /* Ken's trick: clips to [-32768, 32767] */
-    // ok vor generic case (fb)
-    int32_t sign = x >> 31;
-    if (sign != (x >> 15)) x = sign ^ ((1 << 15) - 1);
-
-    return (short)x;
-#else
     // this is better on xtensa (fb)
     asm("clamps %0, %1, 15" : "=a"(x) : "a"(x) :);
     return x;
 #endif
+
+#if (defined CONFIG_IDF_TARGET_ESP32P4)
+    int32_t sign;
+
+    /* assumes you've already rounded (x += (1 << (fracBits-1))) */
+    x >>= fracBits;
+
+    /* Ken's trick: clips to [-32768, 32767] */
+    sign = x >> 31;
+    if (sign != (x >> 15)) { x = sign ^ ((1 << 15) - 1); }
+
+    return (int16_t)x;
+#endif
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    PolyphaseMono
  *
  * Description: filter one subband and produce 32 output PCM samples for one channel
@@ -3386,8 +3385,8 @@ inline short ClipToShort(int32_t x, int32_t fracBits) {
  * Outputs:     32 samples of one channel of decoded PCM data, (i.e. Q16.0)
  *
  * Return:      none
- **********************************************************************************************************************/
-void PolyphaseMono(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
+ */
+void MP3Decoder::PolyphaseMono(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
     int32_t         i;
     const uint32_t* coef;
     int32_t*        vb1;
@@ -3450,7 +3449,8 @@ void PolyphaseMono(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
         pcm++;
     }
 }
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    PolyphaseStereo
  *
  * Description: filter one subband and produce 32 output PCM samples for each channel
@@ -3467,8 +3467,8 @@ void PolyphaseMono(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
  * Return:      none
  *
  * Notes:       interleaves PCM samples LRLRLR...
- **********************************************************************************************************************/
-void PolyphaseStereo(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
+ */
+void MP3Decoder::PolyphaseStereo(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
     int32_t         i;
     const uint32_t* coef;
     int32_t*        vb1;
@@ -3551,8 +3551,8 @@ void PolyphaseStereo(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
         pcm += 2;
     }
 }
-
-/***********************************************************************************************************************
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+/*
  * Function:    AnalyzeFrame
  *
  * Description: filter one subband and produce 32 output PCM samples for each channel
@@ -3565,8 +3565,8 @@ void PolyphaseStereo(int16_t* pcm, int32_t* vbuf, const uint32_t* coefBase) {
  *
  * Return:      main_data_begin
  *
- **********************************************************************************************************************/
-int MP3_AnalyzeFrame(const uint8_t* frame_data, size_t frame_len) {
+ */
+int MP3Decoder::MP3_AnalyzeFrame(const uint8_t* frame_data, size_t frame_len) {
     if (frame_len < 4) {
         MP3_LOG_ERROR("Error: Frame data too short for header (need 4 bytes, got %zu).\n", frame_len);
         return -3; // Frame too short for header
@@ -3699,22 +3699,27 @@ int MP3_AnalyzeFrame(const uint8_t* frame_data, size_t frame_len) {
 
     return main_data_begin_val;
 }
-
-uint64_t SAR64(uint64_t x, int32_t n) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint64_t MP3Decoder::SAR64(uint64_t x, int32_t n) {
     return x >> n;
 }
-int32_t MULSHIFT32(int32_t x, int32_t y) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::MULSHIFT32(int32_t x, int32_t y) {
     int32_t z;
     z = (uint64_t)x * (uint64_t)y >> 32;
     return z;
 }
-uint64_t MADD64(uint64_t sum64, int32_t x, int32_t y) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint64_t MP3Decoder::MADD64(uint64_t sum64, int32_t x, int32_t y) {
     sum64 += (uint64_t)x * (uint64_t)y;
     return sum64;
 } /* returns 64-bit value in [edx:eax] */
-uint64_t xSAR64(uint64_t x, int32_t n) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+uint64_t MP3Decoder::xSAR64(uint64_t x, int32_t n) {
     return x >> n;
 }
-int32_t FASTABS(int32_t x) {
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+int32_t MP3Decoder::FASTABS(int32_t x) {
     return __builtin_abs(x);
-}  
+}
+// —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————

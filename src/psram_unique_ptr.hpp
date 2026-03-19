@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -83,6 +84,7 @@ class ps_ptr {
     size_t                             allocated_size = 0;
     char*                              name = nullptr; // member for object name
     static inline T                    dummy{};        // For invalid accesses
+    size_t                             length_ = 0;    // actual number of characters
   public:
     // Auxiliary function for setting the name
     void set_name(const char* new_name) {
@@ -166,6 +168,9 @@ class ps_ptr {
             static_assert(!std::is_same_v<T, T>, "Copy constructor disabled for this type");
         }
     }
+
+    // 🆕 alloc constructor, e.g. ps_ptr<char>buff(1024)
+    explicit ps_ptr(size_t n) { alloc(n); }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  A L L O C  📌📌📌
 
@@ -535,6 +540,48 @@ class ps_ptr {
         std::memcpy(mem.get(), out.data(), bytes);
         return i;
     }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  U R L D E C O D E  📌📌📌
+    // Decodes the current string in-place from URL encoding.
+    // Example:
+    //   ps_ptr<char> url = "%D0%B8%D1%81%D0%BF%D1%8B%D1%82%D0%B0%D0%BD%D0%B8%D0%B5.mp3";
+    //   url.urldecode(); // → "испытание.mp3"
+    //   url = "Born%20On%20The%20B.mp3"; url.urldecode(); // → "Born On The B.mp3"
+    //   url = "A+Test.mp3"; url.urldecode(); // → "A Test.mp3"
+
+    void urldecode() {
+        static_assert(std::is_same_v<T, char>, "urldecode() is only valid for ps_ptr<char>");
+        if (!mem || !get()) {
+            log_e("urldecode: No valid string data");
+            return;
+        }
+
+        char*    str = get();
+        uint16_t p1 = 0, p2 = 0;
+        char     a, b;
+
+        while (str[p1]) {
+            if ((str[p1] == '%') && ((a = str[p1 + 1]) && (b = str[p1 + 2])) && (isxdigit(a) && isxdigit(b))) {
+
+                // Normalize lowercase to uppercase
+                if (a >= 'a') a -= ('a' - 'A');
+                if (b >= 'a') b -= ('a' - 'A');
+
+                // Convert hex digits to numeric
+                a = (a >= 'A') ? (a - 'A' + 10) : (a - '0');
+                b = (b >= 'A') ? (b - 'A' + 10) : (b - '0');
+
+                str[p2++] = (a << 4) | b;
+                p1 += 3;
+            } else if (str[p1] == '+') {
+                str[p2++] = ' ';
+                p1++;
+            } else {
+                str[p2++] = str[p1++];
+            }
+        }
+        str[p2] = '\0';
+    }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  C L O N E _ F R O M  📌📌📌
 
@@ -677,6 +724,59 @@ class ps_ptr {
 
         std::memcpy(mem.get() + old_len, suffix, add_len + 1);
         allocated_size = new_len;
+    }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  P U S H _ B A C K   📌📌📌
+    // append individual characters
+    // ps_ptr<char>s; s = "abc"; s.push_back('1); -> abc1
+
+    void push_back(char c) {
+        if (length + 1 >= capacity()) {
+            // Wenn zu klein, Kapazität verdoppeln (wie std::string)
+            size_t new_cap = (capacity() == 0) ? 16 : capacity() * 2;
+            reserve(new_cap);
+        }
+
+        mem.get()[length++] = c;
+        mem.get()[length] = '\0';
+    }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  L E N G T H   📌📌📌
+    size_t length() const { return length_; }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  C A P A C I T Y   📌📌📌
+    size_t capacity() const { return allocated_size ? allocated_size - 1 : 0; }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  R E S E R V E  📌📌📌
+    void reserve(size_t new_cap) {
+        if (new_cap + 1 <= allocated_size) return; // genug Platz vorhanden
+
+        char*  old_data = mem.release();
+        size_t old_len = length();
+
+        size_t new_size = new_cap + 1; // +1 für '\0'
+        if (psramFound())
+            mem.reset(static_cast<char*>(ps_malloc(new_size)));
+        else
+            mem.reset(static_cast<char*>(malloc(new_size)));
+
+        if (!mem) {
+            printf("OOM: reserve(%zu) failed\n", new_size);
+            if (old_data) free(old_data);
+            return;
+        }
+
+        if (old_data) {
+            if (old_len > 0)
+                std::memcpy(mem.get(), old_data, old_len + 1);
+            else
+                mem.get()[0] = '\0';
+            free(old_data);
+        } else {
+            mem.get()[0] = '\0';
+        }
+
+        allocated_size = new_size;
     }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  S T A R T S _ W I T H   📌📌📌
@@ -1149,12 +1249,16 @@ class ps_ptr {
 
     template <typename U = T>
         requires std::is_same_v<U, char>
-    int last_index_of(char ch) const {
+    int last_index_of(char ch, int start_pos = -1) const {
         if (!mem) return -1;
 
         const char* str = static_cast<const char*>(mem.get());
         int         len = static_cast<int>(std::strlen(str));
-        for (int i = len - 1; i >= 0; --i) {
+
+        // if no start position is specified, start at the end
+        if (start_pos < 0 || start_pos >= len) start_pos = len - 1;
+
+        for (int i = start_pos; i >= 0; --i) {
             if (str[i] == ch) return i;
         }
         return -1;
@@ -1167,16 +1271,41 @@ class ps_ptr {
     // printf("last_i  %i\n", last_i);
     // printf("last_A  %i\n", last_A);
 
-    int last_index_of(const T& value) const {
-        if (!mem || allocated_size < sizeof(T)) return -1;
+    // ps_ptr<char> str;
+    // str.assign("/audiofiles/my_playlist/podcast/h.mp3");
+    // int last = str.last_index_of('/');            // → 32 (the last '/')
+    // int prev = str.last_index_of('/', last - 1);  // → 23 (the second to last '/')
 
-        std::size_t count = allocated_size / sizeof(T);
-        T*          data = get();
-        for (int i = static_cast<int>(count) - 1; i >= 0; --i) {
-            if (data[i] == value) return i;
+    template <typename U = T>
+        requires std::is_same_v<U, const char>
+    int last_index_of(const char ch, int start_pos = -1) const {
+        if (!mem) return -1;
+
+        const char* str = static_cast<const char*>(mem.get());
+        int         len = static_cast<int>(std::strlen(str));
+
+        // if no start position is specified, start at the end
+        if (start_pos < 0 || start_pos >= len) start_pos = len - 1;
+
+        for (int i = start_pos; i >= 0; --i) {
+            if (str[i] == ch) return i;
         }
         return -1;
     }
+
+    // int last_index_of(const T& value, int start_pos = -1) const {
+    //     if (!mem || allocated_size < sizeof(T)) return -1;
+
+    //     std::size_t count = allocated_size / sizeof(T);
+    //     T*          data = get();
+
+    //     if (start_pos < 0 || start_pos >= static_cast<int>(count)) start_pos = static_cast<int>(count) - 1;
+
+    //     for (int i = start_pos; i >= 0; --i) {
+    //         if (data[i] == value) return i;
+    //     }
+    //     return -1;
+    // }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌 I N D E X _ O F _ S U B S T R   📌📌📌
 
@@ -1584,7 +1713,7 @@ class ps_ptr {
     T* get() const { return static_cast<T*>(mem.get()); }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  C_G E T  (safe)   📌📌📌
-    const char* c_get(const char* fallback = "NA") const {
+    const char* c_get(const char* fallback = "") const {
         if constexpr (std::is_same_v<T, char>) {
             return mem ? mem.get() : fallback;
         } else {
@@ -1752,6 +1881,73 @@ class ps_ptr {
             return 0;
         }
         return static_cast<uint32_t>(result);
+    }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  T O _ I N T 3 2  📌📌📌
+    // Retrieves the numeric value (int32_t) from the stored string, parsing it as a number in the specified base (default: 10 for decimal).
+    // Example:
+    //   ps_ptr<char> temp = "-12345"; int32_t val = temp.to_int32(10); // Returns -12345
+    //   ps_ptr<char> hex  = "0x7FFF"; int32_t val = hex.to_int32(16); // Returns 32767
+    // If the string is empty, null, invalid, or exceeds INT32 range (-2147483648 ... 2147483647), returns 0 and logs an error.
+
+    int32_t to_int32(int base = 10) const {
+        static_assert(std::is_same_v<T, char>, "to_int32 is only valid for ps_ptr<char>");
+        if (!mem || !get()) {
+            log_e("to_int32: No valid string data");
+            return 0;
+        }
+
+        const char* str = get();
+        char*       end = nullptr;
+        long        result = std::strtol(str, &end, base);
+
+        if (end == str) {
+            log_e("to_int32: Invalid numeric value in '%s' for base %i", str, base);
+            return 0;
+        }
+
+        if (result < INT32_MIN || result > INT32_MAX) {
+            log_e("to_int32: Value in '%s' exceeds INT32 range (%ld..%ld) for base %i", str, (long)INT32_MIN, (long)INT32_MAX, base);
+            return 0;
+        }
+
+        return static_cast<int32_t>(result);
+    }
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  T O _ I N T 6 4  📌📌📌
+    // Retrieves the numeric value (int64_t) from the stored string, parsing it as a number
+    // in the specified base (default: 10 for decimal).
+    //
+    // Examples:
+    //   ps_ptr<char> val1 = "9223372036854775807"; int64_t v1 = val1.to_int64();  // OK
+    //   ps_ptr<char> val2 = "-1234567890123";     int64_t v2 = val2.to_int64();  // OK
+    //   ps_ptr<char> val3 = "0x7FFFFFFFFFFFFFFF"; int64_t v3 = val3.to_int64(16); // OK
+    //
+    // If the string is empty, invalid, or exceeds INT64 range (-9223372036854775808 .. 9223372036854775807),
+    // returns 0 and logs an error.
+
+    int64_t to_int64(int base = 10) const {
+        static_assert(std::is_same_v<T, char>, "to_int64 is only valid for ps_ptr<char>");
+        if (!mem || !get()) {
+            log_e("to_int64: No valid string data");
+            return 0;
+        }
+
+        const char* str = get();
+        char*       end = nullptr;
+        long long   result = std::strtoll(str, &end, base);
+
+        if (end == str) {
+            log_e("to_int64: Invalid numeric value in '%s' for base %i", str, base);
+            return 0;
+        }
+
+        if (result < INT64_MIN || result > INT64_MAX) {
+            log_e("to_int64: Value in '%s' exceeds INT64 range (%lld..%lld) for base %i", str, (long long)INT64_MIN, (long long)INT64_MAX, base);
+            return 0;
+        }
+
+        return static_cast<int64_t>(result);
     }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
@@ -2028,12 +2224,17 @@ class ps_ptr {
     // 📌📌📌  C L E A R   📌📌📌
 
     void clear() {
-        if (mem && allocated_size > 0) { std::memset(mem.get(), 0, allocated_size); }
+        if (mem && allocated_size > 0) { std::memset(mem.get(), 0, allocated_size); length_ = 0; }
     }
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  S I Z E   📌📌📌
 
     size_t size() const { return allocated_size; }
+
+    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+    // 📌📌📌  E M P T Y   📌📌📌
+
+    bool empty() const noexcept { return allocated_size == 0; }
 
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  V A L I D   📌📌📌
@@ -2158,7 +2359,7 @@ class ps_ptr {
     T& operator*() const { return *get(); }
 
     // Safe operator[] with logging
-    T& operator[](std::size_t index) {
+    T& operator[](std::size_t index) noexcept {
         if (index >= allocated_size) {
             log_e("ps_ptr[]: Index %zu out of bounds (size = %zu)", index, allocated_size);
             return dummy; // Access allowed, but ineffective
@@ -2166,7 +2367,7 @@ class ps_ptr {
         return mem[index];
     }
 
-    const T& operator[](std::size_t index) const {
+    const T& operator[](std::size_t index) const noexcept {
         if (index >= allocated_size) {
             log_e("ps_ptr[] (const): Index %zu out of bounds (size = %zu)", index, allocated_size);
             return dummy;
@@ -2202,6 +2403,27 @@ class ps_ptr {
         append(rhs);
         return *this;
     }
+
+    // Iterator compatible accesses (make ps_ptr STL compatible)
+    T*       begin() noexcept { return mem.get(); }
+    const T* begin() const noexcept { return mem.get(); }
+
+    T*       end() noexcept { return mem.get() + allocated_size; }
+    const T* end() const noexcept { return mem.get() + allocated_size; }
+
+    const T* cbegin() const noexcept { return mem.get(); }
+    const T* cend() const noexcept { return mem.get() + allocated_size; }
+
+    // 🔹 Optional: pointer arithmetic (syntactic only)
+    T*       operator+(std::size_t offset) noexcept { return mem.get() + offset; }
+    const T* operator+(std::size_t offset) const noexcept { return mem.get() + offset; }
+
+    void fill(const T& value) { std::fill(begin(), end(), value); }
+
+    // Access as std::span – secure view of the data
+    std::span<T> span() noexcept { return std::span<T>(mem.get(), allocated_size); }
+
+    std::span<const T> span() const noexcept { return std::span<const T>(mem.get(), allocated_size); }
 };
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 // 📌📌📌  O P E R A T O R  📌📌📌 (witout class)
@@ -2505,9 +2727,9 @@ template <typename T> class ps_struct_ptr {
 
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     // 📌📌📌  G E T   📌📌📌
-    T* get() { return mem.get(); }
+    T* get() noexcept { return mem.get(); }
 
-    const T* get() const { return mem.get(); }
+    const T* get() const noexcept { return mem.get(); }
 
     // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
     inline void free_all_ptr_members(); // prototypes
@@ -2569,7 +2791,7 @@ template <typename... Args> inline void free_fields(Args&... fields) {
 // ps_array2d<int32_t> s_samples; // standard constructor
 // s_samples.alloc(2, 1152);      // mem alloc for [2][1152]
 //
-// int ch = 0; // exanole: channel 0
+// int ch = 0; // exanple: channel 0
 //
 // declaration of PCM1 as a pointer on the first element of the line (similar to samples [CH])
 // int32_t* pcm1;

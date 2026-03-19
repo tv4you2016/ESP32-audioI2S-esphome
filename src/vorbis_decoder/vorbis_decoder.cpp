@@ -15,7 +15,7 @@
  * adapted for the ESP32 by schreibfaul1
  *
  *  Created on: 13.02.2023
- *  Updated on: 26.10.2025
+ *  Updated on: 14.02.2026
  */
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 //                                     O G G    I M P L.
@@ -27,8 +27,9 @@
 bool VorbisDecoder::init() {
     setDefaults();
     m_ogg_items.lastSegmentTable.alloc(4096, "m_lastSegmentTable");
-    m_f_isValid = true;
-    return true;
+    m_out16.alloc_array(4608 * 2, "m_out16");
+    if (m_ogg_items.lastSegmentTable.valid() && m_out16.valid()) m_f_isValid = true;
+    return m_f_isValid;
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 void VorbisDecoder::reset() {
@@ -41,6 +42,7 @@ void VorbisDecoder::reset() {
     if (m_mode_param.valid()) m_mode_param.reset();
     if (m_dsp_state.valid()) m_dsp_state.reset();
     m_ogg_items.segment_table.clear();
+    m_out16.reset();
     m_f_isValid = false;
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -49,6 +51,7 @@ void VorbisDecoder::clear() {
     m_ogg_items.reset();
     m_ogg_items.lastSegmentTable.alloc(4096, "m_lastSegmentTable");
     m_vorbisBlockPicItem.clear();
+    m_out16.clear();
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 bool VorbisDecoder::isValid() {
@@ -123,7 +126,7 @@ void VorbisDecoder::clearGlobalConfigurations() { // mode, mapping, floor etc
     if (m_mode_param.valid()) m_mode_param.reset();
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
-int32_t VorbisDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
+int32_t VorbisDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int32_t* outbuf) {
 
     int32_t ret = 0;
     int32_t bytesLeft_begin = *bytesLeft;
@@ -164,7 +167,7 @@ int32_t VorbisDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbu
             ret = vorbisDecodePage3(inbuf, bytesLeft, m_vorbis_segment_length); // codebooks
             break;
         case 4:
-            ret = vorbisDecodePage4(inbuf, bytesLeft, m_vorbis_segment_length, outbuf); // decode audio
+            ret = vorbisDecodePage4(inbuf, bytesLeft, m_vorbis_segment_length, m_out16.get()); // decode audio
             break;
         default:
             VORBIS_LOG_ERROR("unknown page %s", m_pageNr);
@@ -180,6 +183,18 @@ exit:
     if (ret < 0) {
         VORBIS_LOG_ERROR("ret %i", ret);
         m_ogg_items.segment_table.clear();
+    }
+    if (ret == 0) {
+        if (m_vorbisChannels == 1) {
+            for (int i = 0; i < m_vorbisValidSamples; i++) {
+                outbuf[i * 2] = m_out16[i] << 16;
+                outbuf[i * 2 + 1] = m_out16[i] << 16;
+            }
+        }
+
+        if (m_vorbisChannels == 2) {
+            for (int i = 0; i < m_vorbisValidSamples * 2; i++) { outbuf[i] = m_out16[i] << 16; }
+        }
     }
     return ret;
 }
@@ -440,7 +455,7 @@ int32_t VorbisDecoder::parseVorbisFirstPacket(uint8_t* inbuf, int16_t nBytes) { 
 int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32_t current_file_pos) {
     // reference https://xiph.org/vorbis/doc/v-comment.html
 
-    constexpr uint16_t MAX_COMMENT_SIZE = 1024;
+    constexpr uint32_t MAX_COMMENT_SIZE = 1024;
     int32_t            available_bytes = nBytes;
 
     auto parse_comment = [&](ps_ptr<char> comment) -> void {
@@ -457,7 +472,7 @@ int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32
             }
             m_comment.item_vec.clear();
             m_f_newMetadataBlockPicture = true;
-            // for (int i = 0; i < m_comment.pic_vec.size(); i += 2) { VORBIS_LOG_DEBUG("Segment %i   %i - %i", i / 2, m_comment.pic_vec[i], m_comment.pic_vec[i + 1]); }
+            // for (int i = 0; i < m_comment.pic_vec.size(); i += 2) { OPUS_LOG_INFO("Segment %i   %i - %i", i / 2, m_comment.pic_vec[i], m_comment.pic_vec[i + 1]); }
             VORBIS_LOG_DEBUG("Skipping embedded picture (%d bytes)", val.size());
             return;
         }
@@ -465,37 +480,75 @@ int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32
             if (!m_comment.stream_title.valid()) {
                 m_comment.stream_title.assign(val.c_get());
             } else {
-                m_comment.stream_title.append(" -");
+                m_comment.stream_title.append(" - ");
                 m_comment.stream_title.append(val.c_get());
             }
+            audio.info(audio, Audio::evt_id3data, "Artist: %s", val.c_get());
         }
         if (key.starts_with_icase("title")) {
             if (!m_comment.stream_title.valid()) {
                 m_comment.stream_title.assign(val.c_get());
             } else {
-                m_comment.stream_title.append(" -");
+                m_comment.stream_title.append(" - ");
                 m_comment.stream_title.append(val.c_get());
             }
+            audio.info(audio, Audio::evt_id3data, "Title: %s", val.c_get());
         }
+        if (key.starts_with_icase("work")) { audio.info(audio, Audio::evt_id3data, "Work: %s", val.c_get()); }
+        if (key.starts_with_icase("composer")) { audio.info(audio, Audio::evt_id3data, "Composer: %s", val.c_get()); }
+        if (key.starts_with_icase("genre")) { audio.info(audio, Audio::evt_id3data, "Genre: %s", val.c_get()); }
+        if (key.starts_with_icase("date")) { audio.info(audio, Audio::evt_id3data, "Date: %s", val.c_get()); }
+        if (key.starts_with_icase("album")) { audio.info(audio, Audio::evt_id3data, "Album: %s", val.c_get()); }
+        if (key.starts_with_icase("comment")) { audio.info(audio, Audio::evt_id3data, "Comments: %s", val.c_get()); }
+        if (key.starts_with_icase("tracknumber")) { audio.info(audio, Audio::evt_id3data, "Track number/Position in set: %s", val.c_get()); }
+
         if (m_comment.stream_title.valid()) m_f_newSteamTitle = true;
         // comment.println(); // optional output
         m_comment.item_vec.clear();
     };
 
-    auto fill_content = [&](uint8_t* buff, uint32_t len) -> void { // no more than MAX_COMMENT_SIZE
-        uint32_t s = m_comment.comment_content.strlen();
-        uint32_t to_fill = min(MAX_COMMENT_SIZE - s, len);
-        VORBIS_LOG_DEBUG("strlen %i, len %i, to_fill %i", s, len, to_fill);
-        if (s == 0)
-            m_comment.comment_content.copy_from((const char*)buff, to_fill);
-        else
-            m_comment.comment_content.append((const char*)buff, to_fill);
+    auto fill_content = [&](uint8_t* buff, uint32_t len) -> void {
+        // defensive guards (avoid signed/unsigned confusion)
+        const uint32_t S_MAX = MAX_COMMENT_SIZE;
+        uint32_t       s = m_comment.comment_content.strlen(); // vorhandene länge
+        if (s >= S_MAX) {
+            // already full — nothing more to add
+            VORBIS_LOG_DEBUG("comment_content already at or above MAX_COMMENT_SIZE (%u >= %u)", s, S_MAX);
+            return;
+        }
+
+        // clamp len to something sensible (len can come from the caller, so check)
+        uint32_t available_space = S_MAX - s;
+        uint32_t to_fill = (len <= available_space) ? len : available_space;
+
+        VORBIS_LOG_DEBUG("strlen %u, incoming len %u, to_fill %u", s, len, to_fill);
+
+        // defensive: wenn to_fill == 0, nichts tun
+        if (to_fill == 0) return;
+
+        // copy/append execute safely
+        const char* src = reinterpret_cast<const char*>(buff);
+        if (s == 0) {
+            // initial copy
+            m_comment.comment_content.copy_from(src, to_fill);
+        } else {
+            // append, ensure append argument limited to to_fill
+            m_comment.comment_content.append(src, to_fill);
+        }
     };
 
     // 🔹 1. If the previous comment block was incomplete → continue now
     if (m_comment.oob) {
-        uint32_t to_read = m_comment.comment_size - m_comment.save_len;
-        if (to_read > available_bytes) to_read = available_bytes;
+        int64_t tmp_to_read = (int64_t)m_comment.comment_size - (int64_t)m_comment.save_len;
+        if (tmp_to_read < 0) tmp_to_read = 0;
+        uint32_t to_read = (uint32_t)tmp_to_read;
+        if (available_bytes <= 0) { // clamp to available_bytes (available_bytes ist signed int)
+            // nothing to do
+            if (m_comment.list_length == 0) return VORBIS_COMMENT_DONE;
+            return VORBIS_COMMENT_NEED_MORE;
+        }
+        if ((uint32_t)available_bytes < to_read) to_read = (uint32_t)available_bytes;
+
         VORBIS_LOG_DEBUG("to_read %i, available_bytes %i", to_read, available_bytes);
         m_comment.start_pos = current_file_pos;
         VORBIS_LOG_DEBUG("partial start %i", m_comment.start_pos);
@@ -509,7 +562,7 @@ int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32
             m_comment.item_vec.push_back(m_comment.start_pos + to_read);
             // m_comment.comment_content.println();
             parse_comment(m_comment.comment_content);
-            m_comment.comment_content.clear();
+            m_comment.comment_content.reset();
             m_comment.oob = false;
             m_comment.list_length--;
         } else {
@@ -520,7 +573,6 @@ int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32
         if (available_bytes == 0) return VORBIS_COMMENT_NEED_MORE;
         // fall through
     }
-
     // 🔹 2. If this is the first page → read header
     bool first_call = (m_comment.pointer == 0 && m_comment.list_length == 0);
     if (first_call) {
@@ -580,7 +632,7 @@ int32_t VorbisDecoder::parseVorbisComment(uint8_t* inbuf, int16_t nBytes, uint32
             m_comment.pointer += m_comment.comment_size;
             available_bytes -= m_comment.comment_size;
             parse_comment(m_comment.comment_content);
-            m_comment.comment_content.clear();
+            m_comment.comment_content.reset();
             m_comment.list_length--;
             if (m_comment.list_length == 0) return VORBIS_COMMENT_DONE;
         }
@@ -866,7 +918,7 @@ int32_t VorbisDecoder::vorbis_book_unpack(codebook_t* s) {
                 int32_t length = bitReader(5) + 1;
 
                 s->used_entries = s->entries;
-                lengthlist.alloc_array( s->entries * 2, "lengthlist");
+                lengthlist.alloc_array(s->entries * 2, "lengthlist");
 
                 for (i = 0; i < s->entries;) {
                     int32_t num = bitReader(_ilog(s->entries - i));
@@ -1234,14 +1286,14 @@ int32_t VorbisDecoder::_make_decode_table(codebook_t* s, int32_t* lengthlist, ui
     ps_ptr<uint32_t> work;
 
     if (s->dec_nodeb == 4) {
-        s->dec_table.alloc((s->used_entries * 2 + 1) * sizeof(*work), "dec_table");
+        s->dec_table.alloc((s->used_entries + 1) * sizeof(*work), "dec_table");
         /* +1 (rather than -2) is to accommodate 0 and 1 sized books, which are specialcased to nodeb==4 */
         if (_make_words(lengthlist, s->entries, (uint32_t*)s->dec_table.get(), quantvals, s, maptype)) return 1;
 
         return 0;
     }
 
-    work.alloc((s->used_entries * 2 - 2) * sizeof(uint32_t), "work");
+    work.alloc((s->used_entries * 2) * sizeof(int32_t), "work");
     work.clear();
 
     if (_make_words(lengthlist, s->entries, work.get(), quantvals, s, maptype)) { return 1; }

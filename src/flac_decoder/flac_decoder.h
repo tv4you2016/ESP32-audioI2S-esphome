@@ -47,7 +47,7 @@ public:
     uint32_t              getAudioFileDuration() override;
     const char*           getStreamTitle() override;
     const char*           whoIsIt() override;
-    int32_t               decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) override;
+    int32_t               decode(uint8_t* inbuf, int32_t* bytesLeft, int32_t* outbuf) override;
     void                  setRawBlockParams(uint8_t channels, uint32_t sampleRate, uint8_t BPS, uint32_t tsis, uint32_t AuDaLength) override;
     std::vector<uint32_t> getMetadataBlockPicture() override;
     const char*           arg1() override;
@@ -215,8 +215,10 @@ private:
     bool            m_f_lastMetaDataBlock = false;
     bool            m_f_flacNewMetadataBlockPicture = false;
     bool            m_valid = false;
+    bool            m_continued_page = false;
+    bool            m_f_first_flac_frame = false;
     uint8_t         m_flacPageNr = 0;
-    ps_ptr<int32_t> m_samplesBuffer[2];
+    ps_ptr<int64_t> m_samplesBuffer[2];
     uint16_t        m_maxBlocksize = FLAC_MAX_BLOCKSIZE;
     int32_t         m_nBytes = 0;
 
@@ -226,7 +228,7 @@ private:
     int32_t  parseMetaDataBlockHeader(uint8_t* inbuf, int16_t nBytes);
     void     setDefaults();
     void     decoderReset();
-    int8_t   decodeNative(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf);
+    int8_t   decodeNative(uint8_t* inbuf, int32_t* bytesLeft, int32_t* outbuf);
     int8_t   decodeFrame(uint8_t* inbuf, int32_t* bytesLeft);
     uint64_t getTotoalSamplesInStream();
     uint32_t readUint(uint8_t nBits, int32_t* bytesLeft);
@@ -253,29 +255,5 @@ private:
     #define FLAC_LOG_INFO(fmt, ...)    Audio::AUDIO_LOG_IMPL(3, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
     #define FLAC_LOG_DEBUG(fmt, ...)   Audio::AUDIO_LOG_IMPL(4, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
     #define FLAC_LOG_VERBOSE(fmt, ...) Audio::AUDIO_LOG_IMPL(5, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
-
-    // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
-    // Macro for time measuring
-    // PROFILE_START(decodeNative);
-    // ret = decodeNative(inbuf, bytesLeft, outbuf);
-    // PROFILE_END_N(decodeNative, 1000);
-
-#define PROFILE_START(name)                   \
-    static uint64_t _prof_##name##_start = 0; \
-    _prof_##name##_start = esp_timer_get_time()
-
-#define PROFILE_END_N(name, N)                                                                                                           \
-    do {                                                                                                                                 \
-        static uint64_t _prof_##name##_sum = 0;                                                                                          \
-        static uint32_t _prof_##name##_count = 0;                                                                                        \
-        uint64_t        _prof_##name##_elapsed = esp_timer_get_time() - _prof_##name##_start;                                            \
-        _prof_##name##_sum += _prof_##name##_elapsed;                                                                                    \
-        _prof_##name##_count++;                                                                                                          \
-        if (_prof_##name##_count >= (N)) {                                                                                               \
-            printf("%-20s avg: %.2f µs over %u runs\n", #name, (double)_prof_##name##_sum / _prof_##name##_count, _prof_##name##_count); \
-            _prof_##name##_sum = 0;                                                                                                      \
-            _prof_##name##_count = 0;                                                                                                    \
-        }                                                                                                                                \
-    } while (0)
 };
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————

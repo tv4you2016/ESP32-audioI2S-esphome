@@ -3,7 +3,7 @@
  * based on Xiph.Org Foundation celt decoder
  *
  *  Created on: 26.01.2023
- *  Updated on: 26.10.2025
+ *  Updated on: 14.02.2026
  */
 //----------------------------------------------------------------------------------------------------------------------
 //                                     O G G / O P U S     I M P L.
@@ -36,6 +36,9 @@ bool OpusDecoder::init() {
     ;
     celtdec->clear();
 
+    m_out16.alloc_array(4608 * 2, "m_out16");
+    if(!m_out16.valid()) return false;
+
     clear();
     // allocate CELT buffers after OPUS head (nr of channels is needed)
     m_opusError = celtdec->celt_decoder_init(2);
@@ -67,6 +70,7 @@ void OpusDecoder::reset() {
     m_opusSegmentTableRdPtr = -1;
     m_opusCountCode = 0;
     m_isValid = false;
+    m_out16.reset();
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 void OpusDecoder::clear() {
@@ -80,6 +84,7 @@ void OpusDecoder::clear() {
     m_opusCountCode = 0;
     m_opusCurrentFilePos = 0;
     m_comment.reset();
+    m_out16.clear();
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 bool OpusDecoder::isValid() {
@@ -124,7 +129,8 @@ void OpusDecoder::OPUSsetDefaults() {
     m_opusBlockPicItem.shrink_to_fit();
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
-int32_t OpusDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf) {
+int32_t OpusDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int32_t* outbuf) {
+
     int32_t ret = OPUS_NONE;
     int32_t segmLen = 0;
     int32_t bytesLeft_begin = *bytesLeft;
@@ -139,7 +145,7 @@ int32_t OpusDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf)
     }
 
     if (m_frameCount > 0) { // decode audio, next part
-        ret = opusDecodePage3(inbuf, bytesLeft, segmLen, outbuf);
+        ret = opusDecodePage3(inbuf, bytesLeft, segmLen, m_out16.get());
         goto exit;
     }
 
@@ -166,6 +172,7 @@ int32_t OpusDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf)
 
     else if (m_opusPageNr == 1) { // OpusComment Subsequent Pages
         ret = parseOpusComment(inbuf, segmLen, m_opusCurrentFilePos + bytes_consumed);
+
         if (ret == OPUS_COMMENT_INVALID) {
             OPUS_LOG_ERROR("Error in Opus comment page");
             return OPUS_ERR;
@@ -181,7 +188,7 @@ int32_t OpusDecoder::decode(uint8_t* inbuf, int32_t* bytesLeft, int16_t* outbuf)
     }
 
     else if (m_opusPageNr == 3) {
-        ret = opusDecodePage3(inbuf, bytesLeft, segmLen, outbuf); // decode audio
+        ret = opusDecodePage3(inbuf, bytesLeft, segmLen, m_out16.get()); // decode audio
         goto exit;
     }
 
@@ -194,6 +201,22 @@ exit:
     }
 
     if (ret >= 0) { m_opusCurrentFilePos += bytesLeft_begin - (*bytesLeft); }
+
+    if(ret == 0){
+
+        if (m_opusChannels == 1) {
+            for (int i = 0; i < m_opusValidSamples; i++) {
+                outbuf[i * 2] = m_out16[i] << 16;
+                outbuf[i * 2 + 1] = m_out16[i] << 16;
+            }
+        }
+
+        if (m_opusChannels == 2) {
+            for (int i = 0; i < m_opusValidSamples * 2; i++) { outbuf[i] = m_out16[i] << 16; }
+        }
+
+    }
+
     return ret;
 }
 // —————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
@@ -1063,41 +1086,92 @@ int32_t OpusDecoder::parseOpusComment(uint8_t* inbuf, int32_t nBytes, uint32_t c
             OPUS_LOG_DEBUG("Skipping embedded picture (%d bytes)", val.size());
             return;
         }
-        if (key.starts_with_icase("artist")) {
+       if (key.starts_with_icase("artist")) {
             if (!m_comment.stream_title.valid()) {
                 m_comment.stream_title.assign(val.c_get());
             } else {
-                m_comment.stream_title.append(" -");
+                m_comment.stream_title.append(" - ");
                 m_comment.stream_title.append(val.c_get());
             }
+            audio.info(audio, Audio::evt_id3data, "Artist: %s", val.c_get());
         }
         if (key.starts_with_icase("title")) {
             if (!m_comment.stream_title.valid()) {
                 m_comment.stream_title.assign(val.c_get());
             } else {
-                m_comment.stream_title.append(" -");
+                m_comment.stream_title.append(" - ");
                 m_comment.stream_title.append(val.c_get());
             }
+            audio.info(audio, Audio::evt_id3data, "Title: %s", val.c_get());
         }
-        if(m_comment.stream_title.valid()) m_f_newSteamTitle = true;
+        if (key.starts_with_icase("work")) {
+            audio.info(audio, Audio::evt_id3data, "Work: %s", val.c_get());
+        }
+        if (key.starts_with_icase("composer")) {
+            audio.info(audio, Audio::evt_id3data, "Composer: %s", val.c_get());
+        }
+        if (key.starts_with_icase("genre")) {
+            audio.info(audio, Audio::evt_id3data, "Genre: %s", val.c_get());
+        }
+        if (key.starts_with_icase("date")) {
+            audio.info(audio, Audio::evt_id3data, "Date: %s", val.c_get());
+        }
+        if (key.starts_with_icase("album")) {
+            audio.info(audio, Audio::evt_id3data, "Album: %s", val.c_get());
+        }
+        if (key.starts_with_icase("comment")) {
+            audio.info(audio, Audio::evt_id3data, "Comments: %s", val.c_get());
+        }
+        if (key.starts_with_icase("tracknumber")) {
+            audio.info(audio, Audio::evt_id3data, "Track number/Position in set: %s", val.c_get());
+        }
+        if (m_comment.stream_title.valid()) m_f_newSteamTitle = true;
         // comment.println(); // optional output
         m_comment.item_vec.clear();
     };
 
-    auto fill_content = [&](uint8_t* buff, uint32_t len) -> void { // no more than MAX_COMMENT_SIZE
-        uint32_t s = m_comment.comment_content.strlen();
-        uint32_t to_fill = min(MAX_COMMENT_SIZE - s, len);
-        OPUS_LOG_DEBUG("strlen %i, len %i, to_fill %i", s, len, to_fill);
-        if (s == 0)
-            m_comment.comment_content.copy_from((const char*)buff, to_fill);
-        else
-            m_comment.comment_content.append((const char*)buff, to_fill);
+    auto fill_content = [&](uint8_t* buff, uint32_t len) -> void {
+        // defensive guards (avoid signed/unsigned confusion)
+        const uint32_t S_MAX = MAX_COMMENT_SIZE;
+        uint32_t       s = m_comment.comment_content.strlen(); // vorhandene länge
+        if (s >= S_MAX) {
+            // already full — nothing more to add
+            OPUS_LOG_DEBUG("comment_content already at or above MAX_COMMENT_SIZE (%u >= %u)", s, S_MAX);
+            return;
+        }
+
+        // clamp len to something sensible (len can come from the caller, so check)
+        uint32_t available_space = S_MAX - s;
+        uint32_t to_fill = (len <= available_space) ? len : available_space;
+
+        OPUS_LOG_DEBUG("strlen %u, incoming len %u, to_fill %u", s, len, to_fill);
+
+        // defensive: wenn to_fill == 0, nichts tun
+        if (to_fill == 0) return;
+
+        // copy/append execute safely
+        const char* src = reinterpret_cast<const char*>(buff);
+        if (s == 0) {
+            // initial copy
+            m_comment.comment_content.copy_from(src, to_fill);
+        } else {
+            // append, ensure append argument limited to to_fill
+            m_comment.comment_content.append(src, to_fill);
+        }
     };
 
     // 🔹 1. If the previous comment block was incomplete → continue now
     if (m_comment.oob) {
-        uint32_t to_read = m_comment.comment_size - m_comment.save_len;
-        if (to_read > available_bytes) to_read = available_bytes;
+        int64_t tmp_to_read = (int64_t)m_comment.comment_size - (int64_t)m_comment.save_len;
+        if (tmp_to_read < 0) tmp_to_read = 0;
+        uint32_t to_read = (uint32_t)tmp_to_read;
+        if (available_bytes <= 0) {  // clamp to available_bytes (available_bytes ist signed int)
+            // nothing to do
+            if (m_comment.list_length == 0) return OPUS_COMMENT_DONE;
+            return OPUS_COMMENT_NEED_MORE;
+        }
+        if ((uint32_t)available_bytes < to_read) to_read = (uint32_t)available_bytes;
+
         OPUS_LOG_DEBUG("to_read %i, available_bytes %i", to_read, available_bytes);
         m_comment.start_pos = current_file_pos;
         OPUS_LOG_DEBUG("partial start %i", m_comment.start_pos);
@@ -1111,7 +1185,7 @@ int32_t OpusDecoder::parseOpusComment(uint8_t* inbuf, int32_t nBytes, uint32_t c
             m_comment.item_vec.push_back(m_comment.start_pos + to_read);
             // m_comment.comment_content.println();
             parse_comment(m_comment.comment_content);
-            m_comment.comment_content.clear();
+            m_comment.comment_content.reset();
             m_comment.oob = false;
             m_comment.list_length--;
         } else {
@@ -1131,7 +1205,6 @@ int32_t OpusDecoder::parseOpusComment(uint8_t* inbuf, int32_t nBytes, uint32_t c
 
         m_comment.pointer = 8; // skip "OpusTags"
         available_bytes -= 8;
-        m_comment.comment_content.calloc(MAX_COMMENT_SIZE);
         uint32_t vendorLength = little_endian(inbuf + m_comment.pointer);
         m_comment.pointer += 4 + vendorLength; // skip vendor string
         available_bytes -= 4 + vendorLength;
@@ -1139,17 +1212,18 @@ int32_t OpusDecoder::parseOpusComment(uint8_t* inbuf, int32_t nBytes, uint32_t c
         m_comment.pointer += 4;
         available_bytes -= 4;
         OPUS_LOG_DEBUG("VendorLen=%u, CommentCount=%u", vendorLength, m_comment.list_length);
+        if(m_comment.list_length == 0){
+            return OPUS_COMMENT_DONE;
+        }
     }
 
     // 🔹 3. read comments
     while (m_comment.list_length > 0) {
 
-      // --- handle possible split 4-byte comment length ---
+        // --- handle possible split 4-byte comment length ---
         if (m_comment.partial_length > 0 || available_bytes < 4) {
             uint8_t bytes_to_copy = std::min<uint8_t>(4 - m_comment.partial_length, available_bytes);
-            memcpy(m_comment.length_bytes + m_comment.partial_length,
-                   inbuf + (nBytes - available_bytes),
-                   bytes_to_copy);
+            memcpy(m_comment.length_bytes + m_comment.partial_length, inbuf + (nBytes - available_bytes), bytes_to_copy);
 
             m_comment.partial_length += bytes_to_copy;
             available_bytes -= bytes_to_copy;
@@ -1185,13 +1259,13 @@ int32_t OpusDecoder::parseOpusComment(uint8_t* inbuf, int32_t nBytes, uint32_t c
             m_comment.pointer += m_comment.comment_size;
             available_bytes -= m_comment.comment_size;
             parse_comment(m_comment.comment_content);
-            m_comment.comment_content.clear();
+            m_comment.comment_content.reset();
             m_comment.list_length--;
             if (m_comment.list_length == 0) return OPUS_COMMENT_DONE;
         }
 
         else { // out of bounds
-            m_comment.start_pos = current_file_pos + m_comment.pointer;
+            m_comment.start_pos = current_file_pos + nBytes - available_bytes;
             OPUS_LOG_DEBUG("start %i", m_comment.start_pos);
             m_comment.item_vec.push_back(m_comment.start_pos);
             fill_content(inbuf + (nBytes - available_bytes), available_bytes);

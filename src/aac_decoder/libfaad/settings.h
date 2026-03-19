@@ -12,12 +12,12 @@
 #define LD_DEC  // Allow decoding of LD (Low Delay) profile AAC
 // #define DRM_SUPPORT // Allow decoding of Digital Radio Mondiale (DRM)
 #if (defined CONFIG_IDF_TARGET_ESP32S3 || defined CONFIG_IDF_TARGET_ESP32P4)
-    #define SBR_DEC // Allow decoding of SBR (Spectral Band Replication) profile AAC
-    #define PS_DEC // Allow decoding of PS (Parametric Stereo) profile AAC
+    //#define SBR_DEC // Allow decoding of SBR (Spectral Band Replication) profile AAC
+    //#define PS_DEC // Allow decoding of PS (Parametric Stereo) profile AAC
 #endif
 // #define SBR_LOW_POWER
 #define ALLOW_SMALL_FRAMELENGTH
-// #define LC_ONLY_DECODER // if you want a pure AAC LC decoder (independant of SBR_DEC and PS_DEC)
+#define LC_ONLY_DECODER // if you want a pure AAC LC decoder (independant of SBR_DEC and PS_DEC)
 //——————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
 #ifdef DRM_SUPPORT // Allow decoding of Digital Radio Mondiale (DRM)
